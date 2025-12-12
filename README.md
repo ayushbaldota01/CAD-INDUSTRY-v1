@@ -1,36 +1,95 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CAD Viewer Project
+
+A beginner-friendly Next.js application for reviewing CAD (3D) and PDF files, powered by Supabase.
+
+## Tech Stack
+
+- **Frontend**: Next.js (App Router), TypeScript, Tailwind CSS
+- **3D Rendering**: React Three Fiber (Three.js)
+- **PDF Rendering**: PDF.js / pdf-lib
+- **Backend/DB**: Supabase (Postgres, Storage, Auth, Realtime)
+
+## Prerequisites
+
+1.  **Node.js**: Install v18+
+2.  **Supabase Project**:
+    *   Create a new project at [supabase.com](https://supabase.com).
+    *   Get your `Project URL` and `anon public key`.
+    *   Create a Storage Bucket named `cad-files` (public or private).
+    *   (Optional) Set up a `files` table in Database to track uploads.
+
+## Environment Variables
+
+Create a file named `.env.local` in the root directory:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+# Server-side only (if needed for admin tasks)
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
 
 ## Getting Started
 
-First, run the development server:
+1.  **Install dependencies**:
+    ```bash
+    npm install
+    ```
 
+2.  **Run the development server**:
+    ```bash
+    npm run dev
+    ```
+
+3.  **Open the app**:
+    Navigate to [http://localhost:3000](http://localhost:3000).
+
+## Project Structure
+
+- `/app`: Next.js App Router pages and layouts.
+    - `page.tsx`: Dashboard (list of files).
+    - `upload/`: Upload page.
+    - `view/[id]/`: File viewer page (dynamic route).
+- `/components`: Reusable UI components (Viewers, Buttons).
+- `/lib`: Utility functions (Supabase client).
+- `/public`: Static assets.
+
+## TODOs & Roadmap
+
+- [ ] Connect `upload/page.tsx` to Supabase Storage.
+- [ ] Implement `PDFViewer` using `pdfjs-dist` or `react-pdf`.
+- [ ] Implement `ThreeViewer` using `@react-three/fiber` to load GLB/gLTF files.
+- [ ] Add Auth protection to Upload/View routes.
+
+## Running Tests
+Run the unit tests for projection logic:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npx jest
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Demo Script
+Follow these steps to demonstrate the full feature set:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1.  **Setup**:
+    *   Ensure Supabase is running and `.env.local` is configured.
+    *   Run `npm run dev`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+2.  **Upload Model**:
+    *   Navigate to `/upload`.
+    *   Upload `samples/Box.glb` (or any GLB file).
 
-## Learn More
+3.  **View & Annotate**:
+    *   Click on the uploaded model to view it.
+    *   Click anywhere on the model to add a 3D annotation (e.g., "Test Point").
+    *   Rotate the camera to a desired angle.
 
-To learn more about Next.js, take a look at the following resources:
+4.  **Take Snapshot**:
+    *   Click the **Snapshot** button in the header.
+    *   Wait for the alert confirming the snapshot URL.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+5.  **Export Report**:
+    *   (Optional) Use Postman to call `/api/export-pdf` with the returned snapshot ID to generate a PDF report.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+6.  **Annotate PDF**:
+    *   Navigate to `/annotate` to test the PDF overlay tools on a sample document.
+    *   Draw arrows or text and click **Save Overlay**.
