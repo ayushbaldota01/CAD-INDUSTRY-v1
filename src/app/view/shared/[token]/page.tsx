@@ -48,7 +48,7 @@ async function getSharedModel(token: string) {
         fileUrl = model.storage_key
     } else {
         const { data: urlData } = await supabaseAdmin.storage
-            .from('models') // Assuming 'models' bucket
+            .from('cad-files') // Assuming 'models' bucket
             .createSignedUrl(model.storage_key, 3600) // 1 hour access
 
         fileUrl = urlData?.signedUrl || ''
@@ -68,8 +68,9 @@ async function getSharedModel(token: string) {
     }
 }
 
-export default async function SharedViewPage({ params }: { params: { token: string } }) {
-    const data = await getSharedModel(params.token)
+export default async function SharedViewPage({ params }: { params: Promise<{ token: string }> }) {
+    const { token } = await params
+    const data = await getSharedModel(token)
 
     if (!data) return notFound()
     if ('expired' in data) {

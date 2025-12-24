@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
     config.resolve.alias.canvas = false;
     return config;
   },
+
 };
 
 export default nextConfig;

@@ -33,7 +33,7 @@ export async function POST(req: Request) {
 
         // 1. Download PDF
         const { data: fileData, error: downloadError } = await supabaseAdmin.storage
-            .from('models') // Assuming PDFs are in 'models' or similar bucket. The previous step used 'exports' or 'models'.
+            .from('cad-files') // Assuming PDFs are in 'models' or similar bucket. The previous step used 'exports' or 'models'.
             // The user prompt mentions "store PDF to Supabase Storage 'exports' bucket".
             // The source PDF might be in 'models' (uploaded) or 'raw'. 
             // I'll try 'models' first or assume the key is full path if bucket is variable.

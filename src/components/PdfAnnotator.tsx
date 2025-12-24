@@ -5,14 +5,14 @@ import React, { useEffect, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { v4 as uuidv4 } from 'uuid'
 
-// Configure worker (use a CDN for simplicity in this environment to ensure it works without complex build config)
 // Configure worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
 
 export type OverlayItem = {
     id: string
-    type: 'callout' | 'text' | 'arrow' | 'freehand' | 'dimension'
+    type: 'callout' | 'text' | 'arrow' | 'freehand' | 'dimension' | 'highlight'
     points: { x: number; y: number }[] // Normalized 0..1
+    page?: number
     text?: string
     color?: string
 }
@@ -20,14 +20,14 @@ export type OverlayItem = {
 type Props = {
     pdfUrl: string
     overlayJson?: OverlayItem[]
-    onSaveOverlay: (items: OverlayItem[]) => void
+    onSaveAnnotation?: (item: OverlayItem) => void
+    onSaveOverlay?: (items: OverlayItem[]) => void // Keep backward compat if needed, or remove
 }
 
-export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveOverlay }: Props) {
+export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotation }: Props) {
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null)
     const [pageNumber, setPageNumber] = useState(1)
     const [scale, setScale] = useState(1.0)
-    const [items, setItems] = useState<OverlayItem[]>(overlayJson)
     const [tool, setTool] = useState<OverlayItem['type'] | 'none'>('none')
     const [currentPath, setCurrentPath] = useState<{ x: number; y: number }[]>([])
 
@@ -52,11 +52,9 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveOverlay }
     // Render Page
     useEffect(() => {
         if (!pdf || !canvasRef.current) return
-
         const renderPage = async () => {
             const page = await pdf.getPage(pageNumber)
             const viewport = page.getViewport({ scale })
-
             const canvas = canvasRef.current!
             const context = canvas.getContext('2d')
 
@@ -84,50 +82,65 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveOverlay }
     const handleMouseDown = (e: React.MouseEvent) => {
         if (tool === 'none') return
         const coords = getNormCoords(e)
+
+        if (tool === 'callout') {
+            // Instant click for pin
+            const text = prompt('Enter annotation text:')
+            if (!text) return
+
+            const newItem: OverlayItem = {
+                id: uuidv4(),
+                type: 'callout',
+                points: [coords],
+                page: pageNumber,
+                text,
+                color: 'red'
+            }
+            onSaveAnnotation?.(newItem)
+            setTool('none')
+            return
+        }
+
         setCurrentPath([coords])
     }
 
     const handleMouseMove = (e: React.MouseEvent) => {
         if (tool === 'none' || currentPath.length === 0) return
+        if (tool === 'callout') return // handled in mouse down
 
         const coords = getNormCoords(e)
-
         if (tool === 'freehand') {
             setCurrentPath(prev => [...prev, coords])
         } else {
-            // For click-drag shapes (arrow, dimension), just update end point
+            // For click-drag shapes (arrow, highlight)
             setCurrentPath([currentPath[0], coords])
         }
     }
 
     const handleMouseUp = () => {
         if (tool === 'none' || currentPath.length === 0) return
+        if (tool === 'callout') return
 
+        // For highlight, freehand etc
         let newItem: OverlayItem = {
             id: uuidv4(),
             type: tool,
             points: currentPath,
-            color: 'red'
+            page: pageNumber,
+            color: tool === 'highlight' ? 'rgba(255, 255, 0, 0.3)' : 'red'
         }
 
-        if (tool === 'callout' || tool === 'text') {
-            const text = prompt('Enter annotation text:')
-            if (text) newItem.text = text
-            else return // Cancel if no text
-        }
-
-        setItems(prev => [...prev, newItem])
+        // Save immediately
+        onSaveAnnotation?.(newItem)
         setCurrentPath([])
+        // Optional: keep tool active or reset? Let's keep active for drawing
     }
 
-    const handleSave = () => {
-        onSaveOverlay(items)
-    }
+    const renderOverlayItem = (item: OverlayItem) => {
+        if (item.page && item.page !== pageNumber) return null
 
-    const renderOverlayItem = (item: OverlayItem, index?: number) => {
         const w = viewportDims.width
         const h = viewportDims.height
-
         const denorm = (p: { x: number, y: number }) => ({ x: p.x * w, y: p.y * h })
 
         switch (item.type) {
@@ -148,27 +161,30 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveOverlay }
                     </g>
                 )
 
-            case 'dimension':
+            case 'highlight':
                 if (item.points.length < 2) return null
-                const dStart = denorm(item.points[0])
-                const dEnd = denorm(item.points[item.points.length - 1])
-                return (
-                    <g key={item.id}>
-                        <line x1={dStart.x} y1={dStart.y} x2={dEnd.x} y2={dEnd.y} stroke="blue" strokeWidth="2" />
-                        <text x={(dStart.x + dEnd.x) / 2} y={(dStart.y + dEnd.y) / 2} fill="blue" fontSize="12">
-                            Dist
-                        </text>
-                    </g>
-                )
+                const hStart = denorm(item.points[0])
+                const hEnd = denorm(item.points[item.points.length - 1])
+                const x = Math.min(hStart.x, hEnd.x)
+                const y = Math.min(hStart.y, hEnd.y)
+                const width = Math.abs(hEnd.x - hStart.x)
+                const height = Math.abs(hEnd.y - hStart.y)
+                return <rect key={item.id} x={x} y={y} width={width} height={height} fill={item.color} stroke="none" />
 
             case 'text':
             case 'callout':
                 if (item.points.length === 0) return null
                 const p = denorm(item.points[0])
                 return (
-                    <text key={item.id} x={p.x} y={p.y} fill="red" fontSize="14" fontWeight="bold">
-                        {item.text || 'Annotation'}
-                    </text>
+                    <g key={item.id} transform={`translate(${p.x}, ${p.y})`}>
+                        {/* Pin Icon */}
+                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="#dc2626" transform="translate(-12, -24) scale(1)" />
+                        <circle cx="0" cy="-15" r="3" fill="white" />
+                        {/* Text label */}
+                        <text x="15" y="-5" fill="black" fontSize="14" fontWeight="bold" className="drop-shadow-md bg-white">
+                            {item.text}
+                        </text>
+                    </g>
                 )
 
             default: return null
@@ -178,21 +194,23 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveOverlay }
     return (
         <div className="flex flex-col h-full bg-slate-900 text-white">
             {/* Toolbar */}
-            <div className="flex gap-2 p-2 bg-slate-800 border-b border-slate-700">
-                <button onClick={() => setTool('none')} className={`px-3 py-1 rounded ${tool === 'none' ? 'bg-indigo-600' : 'bg-slate-700'}`}>Select</button>
-                <button onClick={() => setTool('freehand')} className={`px-3 py-1 rounded ${tool === 'freehand' ? 'bg-indigo-600' : 'bg-slate-700'}`}>Draw</button>
-                <button onClick={() => setTool('arrow')} className={`px-3 py-1 rounded ${tool === 'arrow' ? 'bg-indigo-600' : 'bg-slate-700'}`}>Arrow</button>
-                <button onClick={() => setTool('text')} className={`px-3 py-1 rounded ${tool === 'text' ? 'bg-indigo-600' : 'bg-slate-700'}`}>Text</button>
-                <button onClick={() => setTool('dimension')} className={`px-3 py-1 rounded ${tool === 'dimension' ? 'bg-indigo-600' : 'bg-slate-700'}`}>Dimension</button>
+            <div className="flex gap-2 p-2 bg-slate-800 border-b border-slate-700 items-center">
+                <button onClick={() => setTool('none')} className={`px-3 py-1 text-sm rounded ${tool === 'none' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Select</button>
+                <button onClick={() => setTool('callout')} className={`px-3 py-1 text-sm rounded ${tool === 'callout' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Coment Pin</button>
+                <button onClick={() => setTool('highlight')} className={`px-3 py-1 text-sm rounded ${tool === 'highlight' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Highlight</button>
+                <button onClick={() => setTool('freehand')} className={`px-3 py-1 text-sm rounded ${tool === 'freehand' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Draw</button>
+
                 <div className="flex-1" />
-                <button onClick={handleSave} className="px-4 py-1 bg-green-600 rounded hover:bg-green-500">Save Overlay</button>
+                <span className="text-xs text-slate-400 mr-2">Page {pageNumber}</span>
+                <button onClick={() => setPageNumber(p => Math.max(1, p - 1))} className="px-2 py-1 bg-slate-700 rounded disabled:opacity-50" disabled={pageNumber <= 1}>←</button>
+                <button onClick={() => setPageNumber(p => p + 1)} className="px-2 py-1 bg-slate-700 rounded ml-1">→</button>
             </div>
 
             {/* Viewer Area */}
             <div className="flex-1 overflow-auto flex justify-center p-8 relative bg-slate-950">
                 <div
                     ref={containerRef}
-                    className="relative shadow-2xl"
+                    className="relative shadow-2xl bg-white"
                     style={{ width: viewportDims.width, height: viewportDims.height }}
                     onMouseDown={handleMouseDown}
                     onMouseMove={handleMouseMove}
@@ -206,15 +224,15 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveOverlay }
                                 <polygon points="0 0, 10 3.5, 0 7" fill="red" />
                             </marker>
                         </defs>
-                        {items.map((item) => renderOverlayItem(item))}
+                        {/* Render existing items passed from parent */}
+                        {overlayJson.map((item) => renderOverlayItem(item))}
 
                         {/* Current drawing path */}
-                        {currentPath.length > 0 && renderOverlayItem({
-                            id: 'temp',
-                            type: tool as any,
-                            points: currentPath,
-                            color: 'rgba(255, 0, 0, 0.5)'
-                        })}
+                        {currentPath.length > 0 && tool !== 'callout' && (
+                            tool === 'highlight'
+                                ? renderOverlayItem({ id: 'temp', type: 'highlight', points: [currentPath[0], currentPath[currentPath.length - 1]], page: pageNumber, color: 'rgba(255, 255, 0, 0.3)' })
+                                : renderOverlayItem({ id: 'temp', type: tool as any, points: currentPath, page: pageNumber, color: 'rgba(255, 0, 0, 0.5)' })
+                        )}
                     </svg>
                 </div>
             </div>

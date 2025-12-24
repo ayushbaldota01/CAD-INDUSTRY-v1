@@ -11,6 +11,7 @@ type Model = {
   file_type: string
   created_at: string
   width?: number // Mock size or whatever
+  projects?: { name: string } | null
 }
 
 export default function Home() {
@@ -20,7 +21,7 @@ export default function Home() {
 
   useEffect(() => {
     // Check auth
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session } }: { data: { session: any } }) => {
       if (session) {
         setSession(session)
       } else {
@@ -32,7 +33,7 @@ export default function Home() {
       }
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: string, session: any) => {
       setSession(session)
     })
 
@@ -50,8 +51,8 @@ export default function Home() {
 
     try {
       const { data, error } = await supabase
-        .from('models')
-        .select('*')
+        .from('files')
+        .select('*, projects(name)')
         .order('created_at', { ascending: false })
         .limit(20)
 
@@ -84,6 +85,12 @@ export default function Home() {
                 Log In
               </Link>
             )}
+            <Link href="/projects" className="px-5 py-2.5 bg-slate-700 text-white font-medium rounded-lg hover:bg-slate-600 transition shadow-sm flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              Projects
+            </Link>
             <Link href="/upload" className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition shadow-sm flex items-center gap-2">
               <span>+</span> Upload Asset
             </Link>
@@ -118,6 +125,12 @@ export default function Home() {
                       <span>{new Date(file.created_at).toLocaleString()}</span>
                       <span>•</span>
                       <span className="uppercase">{file.file_type}</span>
+                      {file.projects && (
+                        <>
+                          <span>•</span>
+                          <span className="text-indigo-600 font-medium">[{file.projects.name}]</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

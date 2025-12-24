@@ -1,137 +1,120 @@
-
 'use client'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 
 export default function LoginPage() {
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
     const [loading, setLoading] = useState(false)
-    const [msg, setMsg] = useState('')
+    const [error, setError] = useState('')
     const router = useRouter()
-
-    // Check if we are in demo/offline mode
-    const isDemoMode = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder')
-
-    useEffect(() => {
-        if (isDemoMode) {
-            console.log('Demo Mode detected on Login Page')
-        }
-    }, [isDemoMode])
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault()
         setLoading(true)
-        setMsg('')
+        setError('')
 
-        if (isDemoMode) {
-            // MOCK LOGIN SUCCESS
-            console.warn('Demo Mode: Simulating login success.')
-
-            // Set a mock user in localStorage so other pages can "see" a user
-            const mockUser = {
-                id: 'demo-user-123',
-                email: email || 'demo@example.com',
-                full_name: 'Demo Architect'
-            }
-            localStorage.setItem('cad-viewer-demo-user', JSON.stringify(mockUser))
-
-            // Simulate network delay
-            await new Promise(r => setTimeout(r, 600))
-
-            alert('Logged in via Demo Mode (Offline).')
-            router.push('/')
-            return
-        }
-
-        // Real Supabase Login
         try {
-            const { error } = await supabase.auth.signInWithPassword({ email, password })
+            const { data, error: signInError } = await supabase.auth.signInWithPassword({
+                email,
+                password
+            })
 
-            if (error) {
-                // Try sign up if login fails
-                if (error.message.includes('Invalid login') || error.message.includes('not found')) {
-                    const { error: signUpError } = await supabase.auth.signUp({
-                        email,
-                        password,
-                        options: { data: { full_name: email.split('@')[0] } }
-                    })
-                    if (signUpError) {
-                        setMsg(signUpError.message)
-                    } else {
-                        setMsg('New account created! Check email or try logging in.')
-                        const { data: { user } } = await supabase.auth.getUser()
-                        if (user) router.push('/')
-                    }
-                } else {
-                    setMsg(error.message)
-                }
-            } else {
+            if (signInError) {
+                setError(signInError.message)
+                return
+            }
+
+            if (data.user) {
                 router.push('/')
             }
         } catch (err: any) {
-            // Network failures (like the one screenshot) end up here
             console.error('Login error:', err)
-            if (err.message?.includes('Failed to fetch') || err.message?.includes('Network request failed')) {
-                setMsg('Connection failed. Forcing Demo Mode...')
-                // Force demo mode fallback
-                const mockUser = { id: 'demo-user-fallback', email: email, full_name: 'Offline User' }
-                localStorage.setItem('cad-viewer-demo-user', JSON.stringify(mockUser))
-                setTimeout(() => router.push('/'), 1000)
-            } else {
-                setMsg('Login failed: ' + err.message)
-            }
+            setError('An unexpected error occurred. Please try again.')
         } finally {
             setLoading(false)
         }
     }
 
     return (
-        <div className="flex items-center justify-center min-h-screen bg-slate-900 text-white">
-            <div className="w-full max-w-md p-8 bg-slate-800 rounded-2xl shadow-xl border border-slate-700">
-                <h1 className="text-2xl font-bold mb-6 text-center">CAD Viewer Login</h1>
+        <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+            <div className="w-full max-w-md p-8 bg-slate-800/50 backdrop-blur-xl rounded-2xl shadow-2xl border border-slate-700/50">
+                <div className="text-center mb-8">
+                    <h1 className="text-3xl font-bold text-white mb-2">Welcome Back</h1>
+                    <p className="text-slate-400 text-sm">Sign in to your CAD collaboration workspace</p>
+                </div>
 
-                <form onSubmit={handleLogin} className="space-y-4">
+                <form onSubmit={handleLogin} className="space-y-5">
                     <div>
-                        <label className="block text-sm text-slate-400 mb-1">Email</label>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Email Address</label>
                         <input
                             type="email"
                             required
                             value={email}
                             onChange={e => setEmail(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:ring-2 focus:ring-indigo-500 outline-none"
-                            placeholder="demo@example.com"
+                            className="w-full bg-slate-900/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
+                            placeholder="you@company.com"
                         />
                     </div>
+
                     <div>
-                        <label className="block text-sm text-slate-400 mb-1">Password</label>
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="block text-sm font-medium text-slate-300">Password</label>
+                            <Link href="/reset-password" className="text-xs text-indigo-400 hover:text-indigo-300 transition">
+                                Forgot password?
+                            </Link>
+                        </div>
                         <input
                             type="password"
                             required
                             value={password}
                             onChange={e => setPassword(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded p-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+                            className="w-full bg-slate-900/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
                             placeholder="••••••••"
                         />
                     </div>
 
-                    {msg && <p className="text-red-400 text-sm">{msg}</p>}
+                    {error && (
+                        <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-3">
+                            <p className="text-red-400 text-sm">{error}</p>
+                        </div>
+                    )}
 
                     <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 py-2 rounded font-medium transition disabled:opacity-50"
+                        className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed py-3 rounded-lg font-semibold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-indigo-900/50"
                     >
-                        {loading ? 'Processing...' : 'Sign In / Sign Up'}
+                        {loading ? (
+                            <span className="flex items-center justify-center gap-2">
+                                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                                Signing in...
+                            </span>
+                        ) : (
+                            'Sign In'
+                        )}
                     </button>
-
-                    <p className="text-xs text-slate-500 text-center mt-4">
-                        If account doesn't exist, we'll try to create it automatically.
-                        <br />
-                        <span className="text-indigo-400">Demo Mode Active: Any login works.</span>
-                    </p>
                 </form>
+
+                <div className="mt-6 text-center">
+                    <p className="text-slate-400 text-sm">
+                        Don't have an account?{' '}
+                        <Link href="/signup" className="text-indigo-400 hover:text-indigo-300 font-medium transition">
+                            Sign up
+                        </Link>
+                    </p>
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-slate-700/50">
+                    <p className="text-xs text-slate-500 text-center">
+                        By signing in, you agree to our Terms of Service and Privacy Policy
+                    </p>
+                </div>
             </div>
         </div>
     )

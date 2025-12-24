@@ -60,14 +60,15 @@ export default function SharedViewerHelper({
                 {model.file_type === 'pdf' ? (
                     <div className="absolute inset-0 p-8 flex items-center justify-center bg-slate-900/50">
                         <div className="w-full max-w-5xl h-full bg-white text-black rounded-lg shadow-2xl overflow-hidden ring-1 ring-white/10">
-                            <PDFViewer url={fileUrl} />
+                            <PDFViewer url={fileUrl} modelId={model.id} />
                         </div>
                     </div>
                 ) : (
                     <CadViewer
                         modelUrl={fileUrl}
                         annotations={initialAnnotations} // Passed from server
-                        onAnnotate={handleAnnotate}
+                        activeTool="select"
+                        onAnnotate={handleAnnotate} // Mismatched sig but maybe ignored if activeTool is select?
                         onAnnotationSelect={(ann) => setSelectedAnnotation(ann)}
                         ref={viewerRef}
                     />

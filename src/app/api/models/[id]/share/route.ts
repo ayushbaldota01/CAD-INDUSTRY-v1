@@ -6,10 +6,11 @@ import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(
     req: Request,
-    { params }: { params: { id: string } }
+    { params }: { params: Promise<{ id: string }> }
 ) {
     try {
-        const modelId = params.id
+        const { id } = await params
+        const modelId = id
         const body = await req.json()
         const { role = 'viewer', expiresInDays = 7 } = body
 

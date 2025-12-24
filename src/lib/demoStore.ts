@@ -1,9 +1,7 @@
-
 'use client'
 
 // A simple global store for demo purposes (since we don't have a real DB connected in demo mode)
-// In a real app, this would be Redux, Zustand, or simple SWR caching.
-// We use a global variable on the window object or module scope to persist across client navigation.
+// We use a global variable on the window object to persist across client navigation AND HMR updates.
 
 export interface DemoFile {
     id: string
@@ -14,12 +12,29 @@ export interface DemoFile {
     date: Date
 }
 
-// Module-level cache (resets on refresh)
-const DEMO_FILES: DemoFile[] = []
+// Use a global variable attached to window/globalThis to allow data to survive Hot Module Replacement (HMR)
+const GLOBAL_KEY = '__CAD_VIEWER_DEMO_FILES__'
+
+// Initialize store from global or create new array
+const getStore = (): DemoFile[] => {
+    if (typeof window === 'undefined') return []
+    if (!(window as any)[GLOBAL_KEY]) {
+        (window as any)[GLOBAL_KEY] = []
+    }
+    return (window as any)[GLOBAL_KEY]
+}
 
 export const demoStore = {
     addFile: (file: File) => {
+        const store = getStore()
         const id = 'demo-' + Date.now()
+
+        // Revoke old URLs to prevent memory leaks if we have too many
+        if (store.length > 20) {
+            const old = store.pop()
+            if (old) URL.revokeObjectURL(old.url)
+        }
+
         const url = URL.createObjectURL(file)
         const type = file.name.toLowerCase().endsWith('.pdf') ? 'PDF' : '3D' as const
 
@@ -31,15 +46,16 @@ export const demoStore = {
             type,
             date: new Date()
         }
-        DEMO_FILES.unshift(record)
+        store.unshift(record)
         return record
     },
 
     getFile: (id: string) => {
-        return DEMO_FILES.find(f => f.id === id)
+        const store = getStore()
+        return store.find(f => f.id === id)
     },
 
     getAll: () => {
-        return DEMO_FILES
+        return getStore()
     }
 }
