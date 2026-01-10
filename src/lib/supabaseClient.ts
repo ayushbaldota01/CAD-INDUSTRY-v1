@@ -1,203 +1,269 @@
-import { createClient } from '@supabase/supabase-js'
+/**
+ * Supabase Client - Production Ready
+ * 
+ * Handles both real Supabase connections and graceful fallback
+ * when the backend is unavailable. No more network errors flooding the console.
+ */
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+import { createClient, SupabaseClient } from '@supabase/supabase-js'
+import { SUPABASE_CONFIG, IS_BROWSER } from './config'
 
-// FORCE MOCK MODE - Set to false to use real Supabase
-const FORCE_MOCK = false
-
-// Global mock data store
-const mockStore = {
-    projects: [] as any[],
-    project_members: [] as any[],
-    profiles: [] as any[],
-    files: [] as any[],
-    activity_logs: [] as any[],
-    models: [] as any[]
+// Types for our data
+export type Project = {
+    id: string
+    name: string
+    description: string | null
+    created_by: string
+    created_at: string
+    updated_at: string
 }
 
-// Simple in-memory mock
-const createMockClient = () => {
-    return {
+export type Profile = {
+    id: string
+    email: string
+    full_name: string | null
+    role: string
+}
+
+export type FileRecord = {
+    id: string
+    name: string
+    file_type: string
+    storage_path: string
+    project_id: string | null
+    created_at: string
+}
+
+// Create a mock client that doesn't make network requests
+function createOfflineClient(): SupabaseClient {
+    const noopPromise = () => Promise.resolve({ data: null, error: null })
+    const noopWithData = <T>(data: T) => Promise.resolve({ data, error: null })
+
+    // Create a session-local store
+    const localStore: Record<string, any[]> = {
+        projects: [],
+        files: [],
+        profiles: [],
+        project_members: [],
+        activity_logs: [],
+        annotations: [],
+    }
+
+    const mockClient = {
         auth: {
-            getUser: async () => {
-                console.log('[MOCK AUTH] getUser called')
+            getUser: () => noopWithData({ user: null }),
+            getSession: () => noopWithData({ session: null }),
+            onAuthStateChange: (callback: any) => {
+                // Call with no session immediately
+                setTimeout(() => callback('SIGNED_OUT', null), 0)
                 return {
-                    data: { user: { id: 'mock-admin-user', email: 'admin@test.com' } },
-                    error: null
+                    data: {
+                        subscription: {
+                            unsubscribe: () => { }
+                        }
+                    }
                 }
             },
-            getSession: async () => ({
-                data: { session: { user: { id: 'mock-admin-user', email: 'admin@test.com' } } },
-                error: null
-            }),
-            onAuthStateChange: () => ({
-                data: { subscription: { unsubscribe: () => { } } }
+            signInWithPassword: () => noopWithData({ user: null, session: null }),
+            signUp: () => noopWithData({ user: null, session: null }),
+            signOut: () => noopPromise(),
+            resetPasswordForEmail: () => noopPromise(),
+            updateUser: () => noopPromise(),
+        },
+
+        storage: {
+            from: (bucket: string) => ({
+                upload: (path: string, file: File) => {
+                    if (IS_BROWSER) {
+                        // Create a local blob URL for demo purposes
+                        const url = URL.createObjectURL(file)
+                        return Promise.resolve({
+                            data: { path, id: `local-${Date.now()}`, fullPath: `${bucket}/${path}` },
+                            error: null
+                        })
+                    }
+                    return noopPromise()
+                },
+                download: () => noopPromise(),
+                remove: () => noopPromise(),
+                getPublicUrl: (path: string) => ({
+                    data: { publicUrl: '' }
+                }),
+                createSignedUrl: () => noopWithData({ signedUrl: null }),
             })
         },
-        storage: {
-            from: (bucket: string) => {
-                console.log(`[MOCK STORAGE] from('${bucket}')`)
-                return {
-                    upload: async (path: string, file: File) => {
-                        console.log(`[MOCK STORAGE] upload('${path}', file)`, file.name, file.size)
-                        return {
-                            data: {
-                                path: path,
-                                id: crypto.randomUUID(),
-                                fullPath: `${bucket}/${path}`
-                            },
-                            error: null
-                        }
-                    },
-                    remove: async (paths: string[]) => {
-                        console.log(`[MOCK STORAGE] remove([${paths.join(', ')}])`)
-                        return {
-                            data: null,
-                            error: null
-                        }
-                    },
-                    getPublicUrl: (path: string) => {
-                        console.log(`[MOCK STORAGE] getPublicUrl('${path}')`)
-                        return {
-                            data: {
-                                publicUrl: `blob:mock-storage/${path}`
-                            }
-                        }
-                    }
-                }
-            }
-        },
+
         from: (table: string) => {
-            console.log(`[MOCK] from('${table}')`)
+            const store = localStore[table] || []
 
-            return {
-                select: (columns = '*') => {
-                    console.log(`[MOCK] ${table}.select('${columns}')`)
+            const createQueryBuilder = (currentData: any[] = store) => ({
+                select: (columns = '*') => createQueryBuilder(currentData),
 
+                eq: (column: string, value: any) => {
+                    const filtered = currentData.filter((item: any) => item[column] === value)
                     return {
-                        eq: (column: string, value: any) => {
-                            console.log(`[MOCK] ${table}.eq('${column}', '${value}')`)
-
-                            return {
-                                single: async () => {
-                                    if (table === 'profiles') {
-                                        return {
-                                            data: {
-                                                id: 'mock-admin-user',
-                                                email: 'admin@test.com',
-                                                full_name: 'Test Admin',
-                                                role: 'admin'
-                                            },
-                                            error: null
-                                        }
-                                    }
-                                    const items = (mockStore as any)[table] || []
-                                    const item = items.find((i: any) => i[column] === value)
-                                    console.log(`[MOCK] ${table}.single() result:`, item)
-                                    return { data: item || null, error: null }
-                                },
-                                then: async (resolve: any) => {
-                                    const items = (mockStore as any)[table] || []
-                                    const filtered = items.filter((i: any) => i[column] === value)
-                                    console.log(`[MOCK] ${table}.eq() filtered:`, filtered)
-                                    resolve({ data: filtered, error: null })
-                                }
-                            }
-                        },
-                        in: (column: string, values: any[]) => {
-                            console.log(`[MOCK] ${table}.in('${column}', [${values.join(', ')}])`)
-
-                            return {
-                                order: (col: string, opts: any) => {
-                                    console.log(`[MOCK] ${table}.order('${col}')`)
-
-                                    return {
-                                        then: async (resolve: any) => {
-                                            const items = (mockStore as any)[table] || []
-                                            const filtered = items.filter((i: any) => values.includes(i[column]))
-                                            console.log(`[MOCK] ${table}.in() filtered:`, filtered)
-                                            resolve({ data: filtered, error: null })
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        ...createQueryBuilder(filtered),
+                        single: () => Promise.resolve({
+                            data: filtered[0] || null,
+                            error: null
+                        })
                     }
                 },
+
+                in: (column: string, values: any[]) => ({
+                    ...createQueryBuilder(currentData.filter((item: any) => values.includes(item[column]))),
+                    order: (col: string, opts?: any) => ({
+                        then: (resolve: any) => resolve({
+                            data: currentData.filter((item: any) => values.includes(item[column])),
+                            error: null
+                        })
+                    })
+                }),
+
+                order: (column: string, options?: any) => createQueryBuilder(currentData),
+                limit: (n: number) => createQueryBuilder(currentData.slice(0, n)),
+
+                single: () => Promise.resolve({
+                    data: currentData[0] || null,
+                    error: null
+                }),
+
+                then: (resolve: any) => resolve({
+                    data: currentData,
+                    error: null
+                })
+            })
+
+            return {
+                ...createQueryBuilder(),
+
                 insert: (data: any) => {
-                    console.log(`[MOCK] ${table}.insert()`, data)
+                    const newItem = {
+                        id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                        ...data,
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    }
+                    localStore[table] = [...(localStore[table] || []), newItem]
 
                     return {
                         select: () => ({
-                            single: async () => {
-                                const newItem = {
-                                    id: crypto.randomUUID(),
-                                    ...data,
-                                    created_at: new Date().toISOString(),
-                                    updated_at: new Date().toISOString()
-                                }
-                                    ; (mockStore as any)[table].push(newItem)
-                                console.log(`[MOCK] ${table} created:`, newItem)
-                                console.log(`[MOCK] ${table} total count:`, (mockStore as any)[table].length)
-                                return { data: newItem, error: null }
-                            }
+                            single: () => Promise.resolve({ data: newItem, error: null })
                         }),
-                        then: async (resolve: any) => {
-                            const newItem = {
-                                id: crypto.randomUUID(),
-                                ...data,
-                                created_at: new Date().toISOString(),
-                                updated_at: new Date().toISOString()
-                            }
-                                ; (mockStore as any)[table].push(newItem)
-                            console.log(`[MOCK] ${table} created (then):`, newItem)
-                            resolve({ data: newItem, error: null })
-                        }
+                        then: (resolve: any) => resolve({ data: newItem, error: null })
                     }
                 },
+
                 update: (data: any) => ({
-                    eq: (column: string, value: any) => ({
-                        then: async (resolve: any) => {
-                            const items = (mockStore as any)[table] || []
-                            const item = items.find((i: any) => i[column] === value)
-                            if (item) {
-                                Object.assign(item, data, { updated_at: new Date().toISOString() })
-                                console.log(`[MOCK] ${table} updated:`, item)
-                            }
-                            resolve({ error: null })
+                    eq: (column: string, value: any) => {
+                        const items = localStore[table] || []
+                        const index = items.findIndex((i: any) => i[column] === value)
+                        if (index >= 0) {
+                            items[index] = { ...items[index], ...data, updated_at: new Date().toISOString() }
                         }
-                    })
+                        return { then: (resolve: any) => resolve({ error: null }) }
+                    }
                 }),
+
                 delete: () => ({
-                    eq: (column: string, value: any) => ({
-                        then: async (resolve: any) => {
-                            const items = (mockStore as any)[table] || []
-                                ; (mockStore as any)[table] = items.filter((i: any) => i[column] !== value)
-                            console.log(`[MOCK] ${table} deleted where ${column}=${value}`)
-                            resolve({ error: null })
-                        }
-                    })
-                })
+                    eq: (column: string, value: any) => {
+                        localStore[table] = (localStore[table] || []).filter((i: any) => i[column] !== value)
+                        return { then: (resolve: any) => resolve({ error: null }) }
+                    }
+                }),
+
+                upsert: (data: any) => {
+                    return {
+                        then: (resolve: any) => resolve({ data, error: null })
+                    }
+                }
             }
-        }
+        },
+
+        rpc: (funcName: string, params?: any) => noopWithData([]),
+    }
+
+    return mockClient as unknown as SupabaseClient
+}
+
+// Connection state
+let connectionTested = false
+let isOnline = false
+
+// Test connection with a simple ping
+async function testConnection(client: SupabaseClient): Promise<boolean> {
+    try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5000)
+
+        const { error } = await client.auth.getSession()
+        clearTimeout(timeout)
+
+        return !error
+    } catch {
+        return false
     }
 }
 
-const shouldUseMock = FORCE_MOCK ||
-    !supabaseUrl ||
-    supabaseUrl.includes('placeholder') ||
-    !supabaseUrl.startsWith('https://') ||
-    !supabaseAnonKey ||
-    supabaseAnonKey === 'placeholder'
+// Create the appropriate client
+function initializeClient(): SupabaseClient {
+    // Check if Supabase is configured
+    if (!SUPABASE_CONFIG.isConfigured) {
+        console.log('📦 Supabase not configured - using local mode')
+        return createOfflineClient()
+    }
 
-export const supabase = shouldUseMock
-    ? (createMockClient() as any)
-    : createClient(supabaseUrl, supabaseAnonKey)
+    // Try to create real client
+    try {
+        const client = createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
+            auth: {
+                persistSession: true,
+                autoRefreshToken: true,
+            },
+            global: {
+                fetch: (url, options) => {
+                    // Add timeout to all fetch requests
+                    const controller = new AbortController()
+                    const timeout = setTimeout(() => controller.abort(), 10000)
 
-if (shouldUseMock) {
-    console.warn('🔧 Using MOCK Supabase client (in-memory with logging)')
-    console.warn('To use real Supabase, set FORCE_MOCK = false in supabaseClient.ts')
-} else {
-    console.log('✅ Using REAL Supabase client:', supabaseUrl)
+                    return fetch(url, {
+                        ...options,
+                        signal: controller.signal,
+                    }).finally(() => clearTimeout(timeout))
+                }
+            }
+        })
+
+        console.log('✅ Supabase client initialized:', SUPABASE_CONFIG.url)
+        return client
+    } catch (error) {
+        console.warn('⚠️ Failed to initialize Supabase client - using local mode')
+        return createOfflineClient()
+    }
 }
+
+// Export the client
+export const supabase = initializeClient()
+
+// Export utility to check online status
+export async function checkSupabaseConnection(): Promise<boolean> {
+    if (connectionTested) return isOnline
+
+    if (!SUPABASE_CONFIG.isConfigured) {
+        connectionTested = true
+        isOnline = false
+        return false
+    }
+
+    isOnline = await testConnection(supabase)
+    connectionTested = true
+
+    if (!isOnline) {
+        console.warn('⚠️ Supabase connection unavailable - features will be limited')
+    }
+
+    return isOnline
+}
+
+// Export the config status
+export const isOfflineMode = !SUPABASE_CONFIG.isConfigured

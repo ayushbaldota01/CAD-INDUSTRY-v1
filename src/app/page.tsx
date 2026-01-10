@@ -1,147 +1,244 @@
-
 'use client'
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
+/**
+ * Dashboard Page - Optimized
+ * 
+ * Main landing page with improved performance and offline support.
+ */
 
-type Model = {
+import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
+import { supabase, isOfflineMode, checkSupabaseConnection } from '@/lib/supabaseClient'
+
+type FileRecord = {
   id: string
   name: string
   file_type: string
   created_at: string
-  width?: number // Mock size or whatever
-  projects?: { name: string } | null
 }
 
 export default function Home() {
-  const [models, setModels] = useState<Model[]>([])
+  const [files, setFiles] = useState<FileRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState<any>(null)
+  const [connectionStatus, setConnectionStatus] = useState<'checking' | 'online' | 'offline'>('checking')
 
+  // Check connection and auth on mount
   useEffect(() => {
-    // Check auth
-    supabase.auth.getSession().then(({ data: { session } }: { data: { session: any } }) => {
-      if (session) {
-        setSession(session)
+    const init = async () => {
+      // Check if we're online
+      if (isOfflineMode) {
+        setConnectionStatus('offline')
       } else {
-        // Check local mock session
-        const mock = localStorage.getItem('cad-viewer-demo-user')
-        if (mock) {
-          setSession({ user: JSON.parse(mock) })
-        }
+        const isOnline = await checkSupabaseConnection()
+        setConnectionStatus(isOnline ? 'online' : 'offline')
       }
-    })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: string, session: any) => {
+      // Get session
+      const { data: { session } } = await supabase.auth.getSession()
+      setSession(session)
+      setLoading(false)
+    }
+
+    init()
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
     })
-
-    fetchModels()
 
     return () => subscription.unsubscribe()
   }, [])
 
-  const fetchModels = async () => {
-    setLoading(true)
-    if (process.env.NEXT_PUBLIC_SUPABASE_URL?.includes('placeholder')) {
-      setLoading(false)
-      return // Skip fetch in demo mode (so we don't spam console errors)
+  // Fetch files when session is available
+  const fetchFiles = useCallback(async () => {
+    if (!session || connectionStatus === 'offline') {
+      setFiles([])
+      return
     }
+
+    setLoading(true)
 
     try {
       const { data, error } = await supabase
         .from('files')
-        .select('*, projects(name)')
+        .select('id, name, file_type, created_at')
         .order('created_at', { ascending: false })
         .limit(20)
 
-      if (error) {
-        console.error(error)
-      } else {
-        setModels(data || [])
+      if (!error && data) {
+        setFiles(data)
       }
     } catch (e) {
-      console.error('Fetch models failed', e)
+      console.warn('Failed to fetch files:', e)
     }
+
     setLoading(false)
-  }
+  }, [session, connectionStatus])
+
+  useEffect(() => {
+    if (session && connectionStatus === 'online') {
+      fetchFiles()
+    }
+  }, [session, connectionStatus, fetchFiles])
 
   return (
     <main className="min-h-screen bg-slate-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        {/* Header */}
         <header className="flex justify-between items-center mb-10">
           <div>
             <h1 className="text-3xl font-bold text-slate-900">CAD Review Dashboard</h1>
             <p className="text-slate-500 mt-1">Manage 3D models and specifications</p>
           </div>
+
           <div className="flex gap-4 items-center">
+            {/* Connection Status */}
+            {connectionStatus === 'offline' && (
+              <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
+                <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+                Local Mode
+              </div>
+            )}
+
             {session ? (
               <div className="text-sm text-slate-600">
-                Logged in as <span className="font-semibold">{session.user.email}</span>
+                <span className="font-semibold">{session.user.email}</span>
               </div>
             ) : (
               <Link href="/login" className="text-indigo-600 font-medium hover:underline">
                 Log In
               </Link>
             )}
-            <Link href="/projects" className="px-5 py-2.5 bg-slate-700 text-white font-medium rounded-lg hover:bg-slate-600 transition shadow-sm flex items-center gap-2">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
-              Projects
-            </Link>
-            <Link href="/upload" className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition shadow-sm flex items-center gap-2">
+
+            <Link
+              href="/upload"
+              className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition shadow-sm flex items-center gap-2"
+            >
               <span>+</span> Upload Asset
             </Link>
           </div>
         </header>
 
+        {/* Quick Stats */}
+        {session && connectionStatus === 'online' && files.length > 0 && (
+          <div className="grid grid-cols-3 gap-6 mb-8">
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+              <div className="text-3xl font-bold text-indigo-600">{files.length}</div>
+              <div className="text-sm text-slate-500 mt-1">Recent Files</div>
+            </div>
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+              <div className="text-3xl font-bold text-emerald-600">
+                {files.filter(f => ['glb', 'gltf', 'stl', 'obj'].includes(f.file_type)).length}
+              </div>
+              <div className="text-sm text-slate-500 mt-1">3D Models</div>
+            </div>
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+              <div className="text-3xl font-bold text-rose-600">
+                {files.filter(f => f.file_type === 'pdf').length}
+              </div>
+              <div className="text-sm text-slate-500 mt-1">Documents</div>
+            </div>
+          </div>
+        )}
+
+        {/* Files Section */}
         <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-            <h2 className="font-semibold text-slate-800">Recent Projects</h2>
-            <button onClick={fetchModels} className="text-sm text-indigo-600 font-medium hover:underline">Refresh</button>
+            <h2 className="font-semibold text-slate-800">Recent Files</h2>
+            {session && connectionStatus === 'online' && (
+              <button
+                onClick={fetchFiles}
+                className="text-sm text-indigo-600 font-medium hover:underline"
+              >
+                Refresh
+              </button>
+            )}
           </div>
 
           <div className="divide-y divide-slate-100">
-            {loading && <div className="p-8 text-center text-slate-400">Loading projects...</div>}
-
-            {!loading && models.length === 0 && (
-              <div className="p-12 text-center">
-                <p className="text-slate-500 mb-4">No models found.</p>
-                <Link href="/upload" className="text-indigo-600 hover:underline">Upload your first model</Link>
+            {loading && (
+              <div className="p-8 text-center text-slate-400">
+                <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                Loading...
               </div>
             )}
 
-            {!loading && models.map((file) => (
-              <div key={file.id} className="group flex items-center justify-between p-4 hover:bg-slate-50 transition">
+            {!loading && !session && (
+              <div className="p-12 text-center">
+                <div className="text-5xl mb-4">🔐</div>
+                <h3 className="text-lg font-semibold text-slate-700 mb-2">Sign in to view your files</h3>
+                <p className="text-slate-500 mb-6 max-w-md mx-auto">
+                  Access your CAD models, collaborate with your team, and manage projects.
+                </p>
+                <Link
+                  href="/login"
+                  className="inline-block px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition"
+                >
+                  Sign In
+                </Link>
+              </div>
+            )}
+
+            {!loading && session && connectionStatus === 'offline' && (
+              <div className="p-12 text-center">
+                <div className="text-5xl mb-4">📴</div>
+                <h3 className="text-lg font-semibold text-slate-700 mb-2">Offline Mode</h3>
+                <p className="text-slate-500 mb-6 max-w-md mx-auto">
+                  You can still upload and view files locally. They will sync when connection is restored.
+                </p>
+                <Link
+                  href="/upload"
+                  className="inline-block px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition"
+                >
+                  Upload Local File
+                </Link>
+              </div>
+            )}
+
+            {!loading && session && connectionStatus === 'online' && files.length === 0 && (
+              <div className="p-12 text-center">
+                <div className="text-5xl mb-4">📁</div>
+                <p className="text-slate-500 mb-4">No files yet.</p>
+                <Link href="/upload" className="text-indigo-600 hover:underline">
+                  Upload your first model
+                </Link>
+              </div>
+            )}
+
+            {!loading && files.map((file) => (
+              <div
+                key={file.id}
+                className="group flex items-center justify-between p-4 hover:bg-slate-50 transition"
+              >
                 <div className="flex items-center gap-4">
-                  <div className={`w-12 h-12 rounded-lg flex items-center justify-center text-xl shadow-sm ${file.file_type === 'glb' ? 'bg-indigo-50 text-indigo-600' : 'bg-red-50 text-red-600'}`}>
-                    {file.file_type === 'glb' || file.file_type === 'gltf' ? '🎲' : '📄'}
+                  <div className={`
+                                        w-12 h-12 rounded-lg flex items-center justify-center text-xl shadow-sm
+                                        ${['glb', 'gltf', 'stl', 'obj'].includes(file.file_type)
+                      ? 'bg-indigo-50 text-indigo-600'
+                      : 'bg-red-50 text-red-600'
+                    }
+                                    `}>
+                    {['glb', 'gltf', 'stl', 'obj'].includes(file.file_type) ? '🎲' : '📄'}
                   </div>
                   <div>
-                    <h3 className="font-medium text-slate-900 group-hover:text-indigo-600 transition">{file.name}</h3>
+                    <h3 className="font-medium text-slate-900 group-hover:text-indigo-600 transition">
+                      {file.name}
+                    </h3>
                     <div className="flex gap-3 text-xs text-slate-500 mt-0.5">
                       <span>{new Date(file.created_at).toLocaleString()}</span>
                       <span>•</span>
                       <span className="uppercase">{file.file_type}</span>
-                      {file.projects && (
-                        <>
-                          <span>•</span>
-                          <span className="text-indigo-600 font-medium">[{file.projects.name}]</span>
-                        </>
-                      )}
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <Link
-                    href={`/view/${file.id}?name=${encodeURIComponent(file.name)}&type=${file.file_type === 'pdf' ? 'PDF' : '3D'}`}
-                    className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 hover:border-slate-400 transition shadow-sm"
-                  >
-                    Review
-                  </Link>
-                </div>
+
+                <Link
+                  href={`/view/${file.id}?name=${encodeURIComponent(file.name)}&type=${file.file_type === 'pdf' ? 'PDF' : '3D'}`}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 hover:border-slate-400 transition shadow-sm"
+                >
+                  Review
+                </Link>
               </div>
             ))}
           </div>

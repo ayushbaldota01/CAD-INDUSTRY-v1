@@ -1,12 +1,10 @@
 'use client'
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useDropzone } from 'react-dropzone'
 import { supabase } from '@/lib/supabaseClient'
 import { demoStore } from '@/lib/demoStore'
-import { useUserRole } from '@/hooks/useUserRole'
-import { useProjects } from '@/hooks/useProjects'
 
 // ============================================================================
 // PRODUCTION-GRADE UPLOAD PAGE
@@ -36,14 +34,22 @@ interface UploadError {
 
 export default function UploadPage() {
     const router = useRouter()
-    const { profile, role, loading: roleLoading } = useUserRole()
-    const { projects, loading: projectsLoading } = useProjects()
-    const userId = profile?.id
+    const [userId, setUserId] = useState<string | null>(null)
+    const [loading, setLoading] = useState(true)
+
+    // Get user on mount
+    useEffect(() => {
+        const getUser = async () => {
+            const { data: { user } } = await supabase.auth.getUser()
+            setUserId(user?.id || null)
+            setLoading(false)
+        }
+        getUser()
+    }, [])
 
     // Upload state
     const [file, setFile] = useState<File | null>(null)
     const [name, setName] = useState('')
-    const [selectedProject, setSelectedProject] = useState<string>('')
     const [uploadState, setUploadState] = useState<UploadState>('idle')
     const [uploadProgress, setUploadProgress] = useState(0)
     const [error, setError] = useState<UploadError | null>(null)
@@ -187,9 +193,8 @@ export default function UploadPage() {
             if (fileExt === 'pdf') dbType = 'pdf'
             else if (fileExt === 'stl') dbType = 'stl'
 
-            // Generate storage path: {projectId OR userId}/{timestamp}_{filename}
-            const folderId = selectedProject || userId
-            const storagePath = `${folderId}/${Date.now()}_${file.name}`
+            // Generate storage path: {userId}/{timestamp}_{filename}
+            const storagePath = `${userId}/${Date.now()}_${file.name}`
 
             console.log('[UPLOAD] Starting upload', {
                 fileName: file.name,
@@ -235,8 +240,7 @@ export default function UploadPage() {
                     type: dbType,
                     storage_path: storagePath,
                     user_id: userId,
-                    file_size: file.size,
-                    project_id: selectedProject || undefined
+                    file_size: file.size
                 })
             })
 
@@ -294,25 +298,13 @@ export default function UploadPage() {
     }
 
     // ========================================================================
-    // PERMISSION CHECK
+    // LOADING STATE
     // ========================================================================
 
-    if (roleLoading) {
+    if (loading) {
         return (
             <main className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8 flex items-center justify-center">
                 <div className="text-slate-600">Loading...</div>
-            </main>
-        )
-    }
-
-    if (role !== 'admin') {
-        return (
-            <main className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8 flex items-center justify-center">
-                <div className="bg-white p-8 rounded-xl shadow-lg border border-slate-200 max-w-md text-center">
-                    <div className="text-5xl mb-4">🔒</div>
-                    <h2 className="text-2xl font-bold text-slate-800 mb-2">Access Denied</h2>
-                    <p className="text-slate-600">Only administrators can upload files.</p>
-                </div>
             </main>
         )
     }
@@ -375,28 +367,6 @@ export default function UploadPage() {
                             )}
                         </div>
                     </div>
-
-                    {/* Project Selection */}
-                    {file && (
-                        <div className="p-6 bg-slate-50 border-t border-slate-200">
-                            <label className="block text-sm font-medium text-slate-700 mb-2">
-                                Project (Optional)
-                            </label>
-                            <select
-                                value={selectedProject}
-                                onChange={(e) => setSelectedProject(e.target.value)}
-                                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none bg-white"
-                                disabled={uploadState !== 'idle'}
-                            >
-                                <option value="">No Project (Personal File)</option>
-                                {projects.map((project: any) => (
-                                    <option key={project.id} value={project.id}>
-                                        {project.name}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
 
                     {/* File Details */}
                     {file && (

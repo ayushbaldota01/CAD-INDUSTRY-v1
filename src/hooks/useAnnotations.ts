@@ -1,134 +1,198 @@
+/**
+ * useAnnotations Hook - Optimized
+ * 
+ * Handles annotation CRUD operations with graceful offline fallback.
+ */
 
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '@/lib/supabaseClient'
-import { Annotation } from '@/components/CadViewer'
+import { supabase, isOfflineMode } from '@/lib/supabaseClient'
+import type { Annotation } from '@/components/engine/types'
 
-// Helper to check for demo mode
-const isDemoMode = () => !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder')
+type UseAnnotationsReturn = {
+    annotations: Annotation[]
+    loading: boolean
+    error: string | null
+    createAnnotation: (
+        data: { position: any; normal: any },
+        text: string
+    ) => Promise<Annotation | null>
+    updateAnnotation: (id: string, updates: Partial<Annotation>) => Promise<void>
+    deleteAnnotation: (id: string) => Promise<void>
+    refresh: () => Promise<void>
+}
 
-export const useAnnotations = (fileId: string) => {
+export function useAnnotations(fileId: string): UseAnnotationsReturn {
     const [annotations, setAnnotations] = useState<Annotation[]>([])
-    const [loading, setLoading] = useState(false)
+    const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
 
-    // Fetch annotations
     const fetchAnnotations = useCallback(async () => {
-        if (!fileId || fileId === 'demo') return
-
-        if (isDemoMode()) {
+        if (!fileId) {
+            setAnnotations([])
             setLoading(false)
             return
         }
 
-        setLoading(true)
-        const { data, error } = await supabase
-            .from('annotations')
-            .select('*')
-            .eq('file_id', fileId)
-            .order('created_at', { ascending: true })
+        try {
+            setLoading(true)
+            setError(null)
 
-        if (error) {
-            console.error('Error fetching annotations:', error)
-            setError(error.message)
-        } else {
-            // Map DB annotations to Viewer annotations
-            const mapped = data.map((d: any) => ({
-                id: d.id,
-                text: d.text,
-                // Handle position stored as JSON {x,y,z}
-                position: d.position && typeof d.position === 'object'
-                    ? [d.position.x, d.position.y, d.position.z] as [number, number, number]
-                    : [0, 0, 0] as [number, number, number],
-                normal: [0, 1, 0] as [number, number, number],
-                type: (d.type === 'bubble' ? 'note' : 'cloud') as 'note' | 'cloud' // simple mapping
-            }))
-            setAnnotations(mapped)
+            const { data, error: fetchError } = await supabase
+                .from('annotations')
+                .select('*')
+                .eq('file_id', fileId)
+                .order('created_at', { ascending: true })
+
+            if (fetchError) {
+                console.warn('Error fetching annotations:', fetchError)
+                setAnnotations([])
+                return
+            }
+
+            // Transform database format to component format
+            // Note: normal and status are stored in the 'extra' JSONB column
+            const transformed: Annotation[] = (data || []).map((ann: any) => {
+                const extra = ann.extra || {}
+                return {
+                    id: ann.id,
+                    position: ann.position || [0, 0, 0],
+                    normal: extra.normal || [0, 1, 0],
+                    text: ann.text || '',
+                    type: ann.type || 'comment',
+                    status: extra.status || 'open',
+                    createdAt: ann.created_at,
+                    createdBy: ann.created_by,
+                }
+            })
+
+            setAnnotations(transformed)
+        } catch (err: any) {
+            console.error('Error in fetchAnnotations:', err)
+            setError(err.message)
+        } finally {
+            setLoading(false)
         }
-        setLoading(false)
     }, [fileId])
 
-    // Initial load
     useEffect(() => {
         fetchAnnotations()
+    }, [fetchAnnotations])
 
-        if (isDemoMode() || !fileId) return
-
-        const channel = supabase
-            .channel(`annotations:${fileId}`)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'annotations', filter: `file_id=eq.${fileId}` }, () => {
-                fetchAnnotations()
-            })
-            .subscribe()
-
-        return () => {
-            supabase.removeChannel(channel)
-        }
-    }, [fileId, fetchAnnotations])
-
-    // Create annotation
-    const createAnnotation = async (
-        data: { position: any; normal: [number, number, number] }, // Allow any for PDF support
+    const createAnnotation = useCallback(async (
+        data: { position: any; normal: any },
         text: string
-    ) => {
-        if (isDemoMode() || fileId === 'demo') {
-            const newAnn: Annotation = {
-                id: 'demo-ann-' + Date.now(),
-                text: text,
-                position: Array.isArray(data.position) ? (data.position as [number, number, number]) : [0, 0, 0],
-                normal: data.normal,
-                type: 'note'
-            }
-            setAnnotations(prev => [...prev, newAnn])
-            return
-        }
+    ): Promise<Annotation | null> => {
+        try {
+            const { data: { user } } = await supabase.auth.getUser()
 
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) {
-            alert('You must be logged in to annotate.')
-            throw new Error('User not logged in')
-        }
-
-        // Logic to determine payload based on position structure
-        let posPayload = data.position;
-        if (Array.isArray(data.position)) {
-            // 3D format: [x,y,z] -> {x,y,z}
-            posPayload = { x: data.position[0], y: data.position[1], z: data.position[2] }
-        }
-
-        const payload = {
-            file_id: fileId,
-            created_by: user.id,
-            text: text,
-            type: 'bubble',
-            position: posPayload,
-            extra: { normal: data.normal }
-        }
-
-        const { error } = await supabase
-            .from('annotations')
-            .insert(payload)
-
-        if (error) {
-            console.error('Error creating annotation:', error)
-            throw error
-        }
-
-        // Log activity
-        await supabase
-            .from('activity_logs')
-            .insert({
+            // Store normal and status in the 'extra' JSONB column since
+            // the database schema doesn't have dedicated columns for them
+            const newAnnotation = {
                 file_id: fileId,
-                action: 'annotation_added',
-                user_id: user.id
-            })
+                position: data.position,
+                extra: {
+                    normal: data.normal,
+                    status: 'open'
+                },
+                text,
+                type: 'comment', // Use valid enum value: 'comment', 'bubble', 'dimension'
+                created_by: user?.id || null,
+            }
 
-        fetchAnnotations()
+            const { data: result, error } = await supabase
+                .from('annotations')
+                .insert(newAnnotation)
+                .select()
+                .single()
+
+            if (error) throw error
+
+            // Transform and add to local state
+            // Read normal and status from extra JSONB
+            const extra = result.extra || {}
+            const transformed: Annotation = {
+                id: result.id,
+                position: result.position,
+                normal: extra.normal || data.normal,
+                text: result.text,
+                type: result.type,
+                status: extra.status || 'open',
+                createdAt: result.created_at,
+                createdBy: result.created_by,
+            }
+
+            setAnnotations(prev => [...prev, transformed])
+
+            return transformed
+        } catch (err: any) {
+            console.error('Error creating annotation:', err)
+
+            // Offline fallback - create local-only annotation
+            if (isOfflineMode) {
+                const localAnnotation: Annotation = {
+                    id: `local-${Date.now()}`,
+                    position: data.position,
+                    normal: data.normal,
+                    text,
+                    type: 'note',
+                    status: 'open',
+                }
+                setAnnotations(prev => [...prev, localAnnotation])
+                return localAnnotation
+            }
+
+            throw err
+        }
+    }, [fileId])
+
+    const updateAnnotation = useCallback(async (id: string, updates: Partial<Annotation>) => {
+        try {
+            // Update local state immediately for responsiveness
+            setAnnotations(prev =>
+                prev.map(ann => ann.id === id ? { ...ann, ...updates } : ann)
+            )
+
+            // Skip API call for local-only annotations
+            if (id.startsWith('local-')) return
+
+            const { error } = await supabase
+                .from('annotations')
+                .update(updates)
+                .eq('id', id)
+
+            if (error) throw error
+        } catch (err: any) {
+            console.error('Error updating annotation:', err)
+            // Don't throw - local state is already updated
+        }
+    }, [])
+
+    const deleteAnnotation = useCallback(async (id: string) => {
+        try {
+            // Update local state immediately
+            setAnnotations(prev => prev.filter(ann => ann.id !== id))
+
+            // Skip API call for local-only annotations
+            if (id.startsWith('local-')) return
+
+            const { error } = await supabase
+                .from('annotations')
+                .delete()
+                .eq('id', id)
+
+            if (error) throw error
+        } catch (err: any) {
+            console.error('Error deleting annotation:', err)
+        }
+    }, [])
+
+    return {
+        annotations,
+        loading,
+        error,
+        createAnnotation,
+        updateAnnotation,
+        deleteAnnotation,
+        refresh: fetchAnnotations,
     }
-
-    // Optimistic update (for UI responsiveness)
-    const updateAnnotation = (id: string, updates: any) => {
-        setAnnotations(prev => prev.map(a => a.id === id ? { ...a, ...updates } : a))
-    }
-
-    return { annotations, loading, error, createAnnotation, updateAnnotation, refresh: fetchAnnotations }
 }

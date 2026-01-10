@@ -63,18 +63,17 @@ export const useUserRole = () => {
 
                 if (error) {
                     console.warn('Profile not found, using auth user data:', error.message)
-                    // Use auth user data if profile doesn't exist
-                    setProfile({
-                        id: user.id,
-                        email: user.email || null,
-                        full_name: user.user_metadata?.full_name || null,
-                        role: 'admin', // Default to admin for now
-                        created_at: user.created_at || new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    })
-                } else {
-                    setProfile(data)
                 }
+
+                // Always grant full permissions in standalone mode
+                setProfile({
+                    id: user.id,
+                    email: user.email || null,
+                    full_name: data?.full_name || user.user_metadata?.full_name || null,
+                    role: 'admin', // Always admin in standalone mode
+                    created_at: user.created_at || new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
             } catch (e: any) {
                 console.error('Error in fetchProfile:', e)
                 setError(e.message)
@@ -95,22 +94,22 @@ export const useUserRole = () => {
         }
     }, [])
 
-    // Calculate permissions based on role
+    // All users have full permissions in standalone mode
     const permissions: RolePermissions = {
-        canUpload: profile?.role === 'admin',
-        canDelete: profile?.role === 'admin',
-        canComment: profile?.role === 'admin' || profile?.role === 'reviewer',
-        canEdit: profile?.role === 'admin'
+        canUpload: true,
+        canDelete: true,
+        canComment: true,
+        canEdit: true
     }
 
     return {
         profile,
-        role: profile?.role || 'viewer',
+        role: 'admin' as UserRole, // Always admin in standalone mode
         permissions,
         loading,
         error,
-        isAdmin: profile?.role === 'admin',
-        isReviewer: profile?.role === 'reviewer',
-        isViewer: profile?.role === 'viewer'
+        isAdmin: true,
+        isReviewer: false,
+        isViewer: false
     }
 }

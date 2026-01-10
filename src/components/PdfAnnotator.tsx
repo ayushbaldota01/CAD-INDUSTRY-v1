@@ -1,7 +1,6 @@
-
 'use client'
 
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -10,7 +9,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLi
 
 export type OverlayItem = {
     id: string
-    type: 'callout' | 'text' | 'arrow' | 'freehand' | 'dimension' | 'highlight'
+    type: 'callout' | 'text' | 'arrow' | 'freehand' | 'dimension' | 'highlight' | 'comment' | 'issue'
     points: { x: number; y: number }[] // Normalized 0..1
     page?: number
     text?: string
@@ -20,19 +19,42 @@ export type OverlayItem = {
 type Props = {
     pdfUrl: string
     overlayJson?: OverlayItem[]
-    onSaveAnnotation?: (item: OverlayItem) => void
-    onSaveOverlay?: (items: OverlayItem[]) => void // Keep backward compat if needed, or remove
+    onSaveAnnotation?: (item: OverlayItem) => Promise<OverlayItem | null> | void
+    onDeleteAnnotation?: (id: string) => void
+    onSaveOverlay?: (items: OverlayItem[]) => void
 }
 
-export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotation }: Props) {
+type HistoryAction = {
+    type: 'add'
+    item: OverlayItem
+}
+
+export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotation, onDeleteAnnotation }: Props) {
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null)
+    const [numPages, setNumPages] = useState(0)
     const [pageNumber, setPageNumber] = useState(1)
-    const [scale, setScale] = useState(1.0)
+
+    // --- ZOOM DISABLED FOR NOW ---
+    // Fixed scale @ 1.2 for good visibility
+    const [scale] = useState(1.2)
+
     const [tool, setTool] = useState<OverlayItem['type'] | 'none'>('none')
+    const [highlightColor, setHighlightColor] = useState('#FFEB3B') // Default Yellow
     const [currentPath, setCurrentPath] = useState<{ x: number; y: number }[]>([])
+
+    // Interaction State
+    const [selectedId, setSelectedId] = useState<string | null>(null)
+    const [hoveredId, setHoveredId] = useState<string | null>(null)
+
+    // History
+    const [history, setHistory] = useState<HistoryAction[]>([])
+    const [redoStack, setRedoStack] = useState<HistoryAction[]>([])
 
     const canvasRef = useRef<HTMLCanvasElement>(null)
     const containerRef = useRef<HTMLDivElement>(null)
+    const scrollContainerRef = useRef<HTMLDivElement>(null)
+    const wrapperRef = useRef<HTMLDivElement>(null)
+
     const [viewportDims, setViewportDims] = useState({ width: 0, height: 0 })
 
     // Load PDF
@@ -42,6 +64,7 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const loadingTask = pdfjsLib.getDocument(pdfUrl)
                 const doc = await loadingTask.promise
                 setPdf(doc)
+                setNumPages(doc.numPages)
             } catch (err) {
                 console.error('Error loading PDF:', err)
             }
@@ -51,52 +74,88 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
 
     // Render Page
     useEffect(() => {
-        if (!pdf || !canvasRef.current) return
+        if (!pdf || !canvasRef.current || pageNumber > pdf.numPages || pageNumber < 1) return
+
+        let isActive = true
         const renderPage = async () => {
-            const page = await pdf.getPage(pageNumber)
-            const viewport = page.getViewport({ scale })
-            const canvas = canvasRef.current!
-            const context = canvas.getContext('2d')
+            try {
+                const page = await pdf.getPage(pageNumber)
+                const viewport = page.getViewport({ scale })
+                const canvas = canvasRef.current
+                if (!canvas) return
 
-            canvas.height = viewport.height
-            canvas.width = viewport.width
-            setViewportDims({ width: viewport.width, height: viewport.height })
+                const context = canvas.getContext('2d')
+                if (!context) return
 
-            if (context) {
-                await page.render({ canvasContext: context, viewport }).promise
+                canvas.height = viewport.height
+                canvas.width = viewport.width
+
+                if (isActive) {
+                    setViewportDims({ width: viewport.width, height: viewport.height })
+                    await page.render({ canvasContext: context, viewport }).promise
+                }
+            } catch (e) {
+                // Suppress render cancellations
             }
         }
         renderPage()
+        return () => { isActive = false }
     }, [pdf, pageNumber, scale])
 
-    // Coords handling
+    // -------------------------------------------------------------------------
+    // COORDINATE HANDLING
+    // -------------------------------------------------------------------------
     const getNormCoords = (e: React.MouseEvent) => {
         if (!containerRef.current) return { x: 0, y: 0 }
         const rect = containerRef.current.getBoundingClientRect()
-        return {
-            x: (e.clientX - rect.left) / rect.width,
-            y: (e.clientY - rect.top) / rect.height
-        }
+        const px = e.clientX - rect.left
+        const py = e.clientY - rect.top
+
+        let x = px / rect.width
+        let y = py / rect.height
+
+        x = Math.max(0, Math.min(1, x))
+        y = Math.max(0, Math.min(1, y))
+
+        return { x, y }
     }
 
     const handleMouseDown = (e: React.MouseEvent) => {
-        if (tool === 'none') return
+        if (e.button !== 0) return
+
+        if (tool === 'none') {
+            if (e.target === containerRef.current || e.target === canvasRef.current) {
+                setSelectedId(null)
+            }
+            return
+        }
+
         const coords = getNormCoords(e)
 
-        if (tool === 'callout') {
-            // Instant click for pin
-            const text = prompt('Enter annotation text:')
-            if (!text) return
+        if (tool === 'comment' || tool === 'issue') {
+            const text = prompt(`Enter ${tool === 'issue' ? 'Issue' : 'Comment'} text:`)
+            if (!text) {
+                setTool('none')
+                return
+            }
 
+            const isIssue = tool === 'issue'
             const newItem: OverlayItem = {
                 id: uuidv4(),
-                type: 'callout',
+                type: isIssue ? 'issue' : 'comment',
                 points: [coords],
                 page: pageNumber,
-                text,
-                color: 'red'
+                text: text,
+                color: isIssue ? '#ef4444' : '#3b82f6'
             }
-            onSaveAnnotation?.(newItem)
+
+                ; (async () => {
+                    const saved = await onSaveAnnotation?.(newItem) as OverlayItem | undefined
+                    if (saved) {
+                        setHistory(prev => [...prev, { type: 'add', item: saved }])
+                    }
+                })()
+
             setTool('none')
             return
         }
@@ -106,42 +165,93 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
 
     const handleMouseMove = (e: React.MouseEvent) => {
         if (tool === 'none' || currentPath.length === 0) return
-        if (tool === 'callout') return // handled in mouse down
+        if (tool === 'comment' || tool === 'issue') return
 
         const coords = getNormCoords(e)
         if (tool === 'freehand') {
-            setCurrentPath(prev => [...prev, coords])
+            const last = currentPath[currentPath.length - 1]
+            const dist = Math.sqrt(Math.pow(coords.x - last.x, 2) + Math.pow(coords.y - last.y, 2))
+            if (dist > 0.001) {
+                setCurrentPath(prev => [...prev, coords])
+            }
         } else {
-            // For click-drag shapes (arrow, highlight)
             setCurrentPath([currentPath[0], coords])
         }
     }
 
     const handleMouseUp = () => {
         if (tool === 'none' || currentPath.length === 0) return
-        if (tool === 'callout') return
+        if (tool === 'comment' || tool === 'issue') return
 
-        // For highlight, freehand etc
-        let newItem: OverlayItem = {
+        const newItem: OverlayItem = {
             id: uuidv4(),
             type: tool,
             points: currentPath,
             page: pageNumber,
-            color: tool === 'highlight' ? 'rgba(255, 255, 0, 0.3)' : 'red'
+            color: tool === 'highlight' ? highlightColor : '#ef4444'
         }
 
-        // Save immediately
-        onSaveAnnotation?.(newItem)
+            ; (async () => {
+                const saved = await onSaveAnnotation?.(newItem) as OverlayItem | undefined
+                if (saved) {
+                    setHistory(prev => [...prev, { type: 'add', item: saved }])
+                }
+            })()
+
         setCurrentPath([])
-        // Optional: keep tool active or reset? Let's keep active for drawing
     }
 
-    const renderOverlayItem = (item: OverlayItem) => {
+    const handleUndo = useCallback(() => {
+        if (history.length === 0) return
+        const lastAction = history[history.length - 1]
+        setHistory(h => h.slice(0, -1))
+        if (lastAction.type === 'add') {
+            onDeleteAnnotation?.(lastAction.item.id)
+            setRedoStack(r => [...r, lastAction])
+        }
+    }, [history, onDeleteAnnotation])
+
+    const handleRedo = useCallback(async () => {
+        if (redoStack.length === 0) return
+        const action = redoStack[redoStack.length - 1]
+        setRedoStack(r => r.slice(0, -1))
+        if (action.type === 'add') {
+            const saved = await onSaveAnnotation?.(action.item)
+            if (saved) setHistory(h => [...h, { type: 'add', item: saved }])
+        }
+    }, [redoStack, onSaveAnnotation])
+
+
+    const renderOverlayItem = (item: OverlayItem, index: number) => {
         if (item.page && item.page !== pageNumber) return null
 
         const w = viewportDims.width
         const h = viewportDims.height
         const denorm = (p: { x: number, y: number }) => ({ x: p.x * w, y: p.y * h })
+
+        const isHovered = hoveredId === item.id
+        const isSelected = selectedId === item.id
+
+        const isPin = item.type === 'callout' || item.type === 'comment' || item.type === 'issue'
+        const opacity = (tool === 'none' && !isHovered && !isSelected && isPin) ? 0.8 : 1.0
+
+        // Determine Color based on Type or explicit color
+        let pinColor = item.color || '#3b82f6'
+        if (item.type === 'issue') pinColor = '#ef4444'
+        if (item.type === 'comment') pinColor = '#3b82f6'
+        // Legacy Support
+        if (item.text?.includes('[ISSUE]')) pinColor = '#ef4444'
+
+        const commonProps = {
+            onMouseEnter: () => setHoveredId(item.id),
+            onMouseLeave: () => setHoveredId(null),
+            onClick: (e: React.MouseEvent) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setSelectedId(prev => prev === item.id ? null : item.id)
+            },
+            style: { cursor: tool === 'none' ? 'pointer' : 'default' }
+        }
 
         switch (item.type) {
             case 'freehand':
@@ -149,93 +259,173 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                     const dp = denorm(p)
                     return `${i === 0 ? 'M' : 'L'} ${dp.x} ${dp.y}`
                 }).join(' ')
-                return <path key={item.id} d={pathData} stroke={item.color} strokeWidth="2" fill="none" />
+                return <path key={item.id} d={pathData} stroke={item.color} strokeWidth="3" fill="none" strokeLinecap="round" {...commonProps} />
 
             case 'arrow':
                 if (item.points.length < 2) return null
-                const start = denorm(item.points[0])
-                const end = denorm(item.points[item.points.length - 1])
-                return (
-                    <g key={item.id}>
-                        <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke={item.color} strokeWidth="2" markerEnd="url(#arrowhead)" />
-                    </g>
-                )
+                const s = denorm(item.points[0])
+                const e = denorm(item.points[item.points.length - 1])
+                return <line key={item.id} x1={s.x} y1={s.y} x2={e.x} y2={e.y} stroke={item.color} strokeWidth="3" markerEnd="url(#arrowhead)" {...commonProps} />
 
             case 'highlight':
                 if (item.points.length < 2) return null
-                const hStart = denorm(item.points[0])
-                const hEnd = denorm(item.points[item.points.length - 1])
-                const x = Math.min(hStart.x, hEnd.x)
-                const y = Math.min(hStart.y, hEnd.y)
-                const width = Math.abs(hEnd.x - hStart.x)
-                const height = Math.abs(hEnd.y - hStart.y)
-                return <rect key={item.id} x={x} y={y} width={width} height={height} fill={item.color} stroke="none" />
+                const p1 = denorm(item.points[0])
+                const p2 = denorm(item.points[item.points.length - 1])
+                return <rect key={item.id} x={Math.min(p1.x, p2.x)} y={Math.min(p1.y, p2.y)} width={Math.abs(p2.x - p1.x)} height={Math.abs(p2.y - p1.y)} fill={item.color} fillOpacity="0.4" {...commonProps} />
 
             case 'text':
             case 'callout':
+            case 'comment':
+            case 'issue':
                 if (item.points.length === 0) return null
                 const p = denorm(item.points[0])
                 return (
-                    <g key={item.id} transform={`translate(${p.x}, ${p.y})`}>
-                        {/* Pin Icon */}
-                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="#dc2626" transform="translate(-12, -24) scale(1)" />
-                        <circle cx="0" cy="-15" r="3" fill="white" />
-                        {/* Text label */}
-                        <text x="15" y="-5" fill="black" fontSize="14" fontWeight="bold" className="drop-shadow-md bg-white">
-                            {item.text}
-                        </text>
+                    <g key={item.id} transform={`translate(${p.x}, ${p.y})`} opacity={opacity} {...commonProps}>
+                        {/* Target Area */}
+                        <circle cx="0" cy="-20" r="25" fill="transparent" />
+                        {/* Stick */}
+                        <line x1="0" y1="0" x2="0" y2="-40" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
+                        {/* Bubble */}
+                        <circle cx="0" cy="-40" r={isSelected ? 18 : 15} fill={isSelected ? '#1e293b' : pinColor} stroke="white" strokeWidth="2" className="transition-all duration-200" />
+                        {/* Index */}
+                        <text x="0" y="-35" textAnchor="middle" fill="white" fontSize={12} fontWeight="bold" className="pointer-events-none">{index + 1}</text>
+                        {/* Anchor Dot */}
+                        <circle cx="0" cy="0" r="3" fill="#10b981" stroke="white" strokeWidth="1" />
                     </g>
                 )
-
             default: return null
         }
     }
 
     return (
-        <div className="flex flex-col h-full bg-slate-900 text-white">
-            {/* Toolbar */}
-            <div className="flex gap-2 p-2 bg-slate-800 border-b border-slate-700 items-center">
-                <button onClick={() => setTool('none')} className={`px-3 py-1 text-sm rounded ${tool === 'none' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Select</button>
-                <button onClick={() => setTool('callout')} className={`px-3 py-1 text-sm rounded ${tool === 'callout' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Coment Pin</button>
-                <button onClick={() => setTool('highlight')} className={`px-3 py-1 text-sm rounded ${tool === 'highlight' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Highlight</button>
-                <button onClick={() => setTool('freehand')} className={`px-3 py-1 text-sm rounded ${tool === 'freehand' ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-slate-600'}`}>Draw</button>
+        <div className="flex flex-col h-full bg-slate-900 text-white relative">
+            <div
+                ref={scrollContainerRef}
+                className="flex-1 overflow-auto bg-slate-950 relative scrollbar-thin scrollbar-thumb-slate-700"
+            >
+                {/* Wrapper ensures resizing doesn't break flow */}
+                <div ref={wrapperRef} className="min-w-full min-h-full flex items-center justify-center p-20 relative">
+                    <div
+                        ref={containerRef}
+                        className="relative shadow-2xl bg-white origin-center"
+                        style={{
+                            width: viewportDims.width,
+                            height: viewportDims.height,
+                            cursor: tool !== 'none' ? 'crosshair' : 'default'
+                        }}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                    >
+                        <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none" />
+                        <svg className="absolute inset-0 pointer-events-auto" width="100%" height="100%" viewBox={`0 0 ${viewportDims.width} ${viewportDims.height}`}>
+                            <defs>
+                                <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                    <polygon points="0 0, 10 3.5, 0 7" fill="#ef4444" />
+                                </marker>
+                            </defs>
+                            {overlayJson.map((item, idx) => renderOverlayItem(item, idx))}
 
-                <div className="flex-1" />
-                <span className="text-xs text-slate-400 mr-2">Page {pageNumber}</span>
-                <button onClick={() => setPageNumber(p => Math.max(1, p - 1))} className="px-2 py-1 bg-slate-700 rounded disabled:opacity-50" disabled={pageNumber <= 1}>←</button>
-                <button onClick={() => setPageNumber(p => p + 1)} className="px-2 py-1 bg-slate-700 rounded ml-1">→</button>
+                            {currentPath.length > 0 && tool !== 'none' && (
+                                <g opacity={0.6}>
+                                    {tool === 'highlight'
+                                        ? <rect
+                                            x={Math.min(currentPath[0].x, currentPath[currentPath.length - 1].x) * viewportDims.width}
+                                            y={Math.min(currentPath[0].y, currentPath[currentPath.length - 1].y) * viewportDims.height}
+                                            width={Math.abs(currentPath[currentPath.length - 1].x - currentPath[0].x) * viewportDims.width}
+                                            height={Math.abs(currentPath[currentPath.length - 1].y - currentPath[0].y) * viewportDims.height}
+                                            fill={highlightColor} />
+                                        : <path d={`M ${currentPath.map(p => `${p.x * viewportDims.width} ${p.y * viewportDims.height}`).join(' L ')}`} stroke="#ef4444" strokeWidth="3" fill="none" />
+                                    }
+                                </g>
+                            )}
+                        </svg>
+                    </div>
+                </div>
             </div>
 
-            {/* Viewer Area */}
-            <div className="flex-1 overflow-auto flex justify-center p-8 relative bg-slate-950">
-                <div
-                    ref={containerRef}
-                    className="relative shadow-2xl bg-white"
-                    style={{ width: viewportDims.width, height: viewportDims.height }}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                >
-                    <canvas ref={canvasRef} className="absolute inset-0" />
+            {/* FIXED POPUP OVERLAY */}
+            {selectedId && overlayJson.find(i => i.id === selectedId) && (
+                <div className="fixed inset-0 pointer-events-none z-[9999]">
+                    {(() => {
+                        const item = overlayJson.find(i => i.id === selectedId)!
+                        if (!['callout', 'comment', 'issue'].includes(item.type)) return null
+                        if (!containerRef.current) return null
 
-                    <svg className="absolute inset-0 pointer-events-none" style={{ width: '100%', height: '100%' }}>
-                        <defs>
-                            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                                <polygon points="0 0, 10 3.5, 0 7" fill="red" />
-                            </marker>
-                        </defs>
-                        {/* Render existing items passed from parent */}
-                        {overlayJson.map((item) => renderOverlayItem(item))}
+                        // Use getBoundingClientRect for bulletproof absolute positioning
+                        const rect = containerRef.current.getBoundingClientRect()
+                        const itemX = rect.left + (item.points[0].x * rect.width)
+                        const itemY = rect.top + (item.points[0].y * rect.height)
 
-                        {/* Current drawing path */}
-                        {currentPath.length > 0 && tool !== 'callout' && (
-                            tool === 'highlight'
-                                ? renderOverlayItem({ id: 'temp', type: 'highlight', points: [currentPath[0], currentPath[currentPath.length - 1]], page: pageNumber, color: 'rgba(255, 255, 0, 0.3)' })
-                                : renderOverlayItem({ id: 'temp', type: tool as any, points: currentPath, page: pageNumber, color: 'rgba(255, 0, 0, 0.5)' })
-                        )}
-                    </svg>
+                        // Logic to check title/color
+                        const isIssue = item.type === 'issue' || item.color === '#ef4444' || item.text?.includes('[ISSUE]')
+
+                        return (
+                            <div
+                                className="absolute pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-200"
+                                style={{
+                                    left: itemX,
+                                    top: itemY - 60, // Position above the pin head
+                                    transform: 'translate(-50%, -100%)'
+                                }}
+                            >
+                                <div className="bg-slate-900/95 backdrop-blur text-white p-4 rounded-xl shadow-2xl border border-slate-700/50 min-w-[240px] max-w-sm relative">
+                                    <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-700/50">
+                                        <span className={`text-[10px] font-bold uppercase tracking-wider ${isIssue ? 'text-red-400' : 'text-blue-400'}`}>
+                                            {isIssue ? 'Critical Issue' : 'Comment'}
+                                        </span>
+                                        <button onClick={() => setSelectedId(null)} className="text-slate-400 hover:text-white transition-colors">✕</button>
+                                    </div>
+                                    <p className="leading-relaxed text-sm text-slate-300 font-medium">
+                                        {item.text?.replace('[ISSUE]', '').trim()}
+                                    </p>
+
+                                    {/* Arrow */}
+                                    <div className="absolute left-1/2 -bottom-2 -translate-x-1/2 w-4 h-4 bg-slate-900/95 border-r border-b border-slate-700/50 rotate-45" />
+                                </div>
+                            </div>
+                        )
+                    })()}
+                </div>
+            )}
+
+            {/* Toolbar */}
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-[100]">
+                {tool === 'highlight' && (
+                    <div className="flex gap-2 p-1.5 bg-slate-900/90 backdrop-blur rounded-full border border-slate-700 shadow-xl">
+                        {['#FFEB3B', '#4CAF50', '#2196F3', '#FF9800'].map(c => (
+                            <button key={c} onClick={() => setHighlightColor(c)} className="w-5 h-5 rounded-full border border-white/20 hover:scale-110 transition" style={{ background: c }} />
+                        ))}
+                    </div>
+                )}
+
+                <div className="flex items-center gap-1 p-1.5 bg-slate-900/90 backdrop-blur-xl rounded-2xl border border-slate-700/50 shadow-2xl ring-1 ring-white/10">
+                    <ToolBtn active={tool === 'none'} onClick={() => setTool('none')} icon={<CursorIcon />} title="Pan" />
+                    <div className="w-px h-6 bg-slate-700/50 mx-1" />
+                    <ToolBtn active={tool === 'comment'} onClick={() => setTool('comment')} icon={<ChatIcon />} title="Add Comment" color="text-blue-400 hover:bg-blue-500/10" />
+                    <ToolBtn active={tool === 'issue'} onClick={() => setTool('issue')} icon={<AlertIcon />} title="Flag Issue" color="text-red-400 hover:bg-red-500/10" />
+                    <div className="w-px h-6 bg-slate-700/50 mx-1" />
+                    <ToolBtn active={tool === 'highlight'} onClick={() => setTool('highlight')} icon={<HighlightIcon />} title="Highlight Area" />
+                    <ToolBtn active={tool === 'freehand'} onClick={() => setTool('freehand')} icon={<PencilIcon />} title="Draw" />
+                    <div className="w-px h-6 bg-slate-700/50 mx-1" />
+                    <ToolBtn onClick={handleUndo} disabled={history.length === 0} icon={<UndoIcon />} title="Undo" />
+                    <ToolBtn onClick={handleRedo} disabled={redoStack.length === 0} icon={<RedoIcon />} title="Redo" />
                 </div>
             </div>
         </div>
     )
 }
+
+const ToolBtn = ({ active, onClick, icon, disabled, title, color }: any) => (
+    <button onClick={onClick} disabled={disabled} title={title} className={`p-2.5 rounded-xl transition-all duration-200 active:scale-95 flex items-center justify-center ${active ? 'bg-slate-800 text-white shadow-inner ring-1 ring-white/10' : 'text-slate-400 hover:text-white hover:bg-slate-800/50'} ${disabled ? 'opacity-30 cursor-not-allowed' : ''} ${active && color ? color : ''}`}>
+        {icon}
+    </button>
+)
+
+const CursorIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" /></svg>
+const ChatIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+const AlertIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+const HighlightIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
+const PencilIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+const UndoIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+const RedoIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l6 6m6-6l-6-6" /></svg>

@@ -11,58 +11,70 @@ interface PDFViewerProps {
 }
 
 export default function PDFViewer({ url, modelId }: PDFViewerProps) {
-    const { annotations, createAnnotation } = useAnnotations(modelId)
+    const { annotations, createAnnotation, deleteAnnotation } = useAnnotations(modelId)
 
     // Map DB annotations to OverlayItems
     const overlayItems = useMemo<OverlayItem[]>(() => {
         return annotations.map(ann => {
             // Check if this annotation is for PDF (has 'page' in position)
-            const pos = ann.position as unknown as { page: number, x: number, y: number, type?: string }
+            const pos = ann.position as any
 
-            // If it's a 3D annotation (array), skip or handle gracefully
-            if (Array.isArray(ann.position)) return null
+            // If it's a 3D annotation (array), skip
+            if (Array.isArray(pos)) return null
 
+            // Detect legacy or new format
+            // New format: pos contains { page, type, points, color, ... }
+            if (pos.points && Array.isArray(pos.points)) {
+                return {
+                    id: ann.id,
+                    type: pos.type || 'comment', // Restored type
+                    points: pos.points,
+                    page: pos.page || 1,
+                    text: ann.text || pos.text,
+                    color: pos.color || 'red'
+                }
+            }
+
+            // Legacy format fallback (point only)
             return {
                 id: ann.id,
-                type: (ann.type === 'note' ? 'callout' : 'highlight') as any, // Simple mapping
-                points: [{ x: pos.x, y: pos.y }],
+                type: 'callout',
+                points: [{ x: pos.x || 0, y: pos.y || 0 }],
                 page: pos.page || 1,
                 text: ann.text,
-                color: 'red' // default
+                color: 'red'
             }
         }).filter(Boolean) as OverlayItem[]
     }, [annotations])
 
-    const handleSaveOverlay = async (item: OverlayItem) => {
-        // Save to Supabase via hook
-        // item.points is normalized {x,y}
-        if (item.points.length === 0) return
+    const handleSaveOverlay = async (item: OverlayItem): Promise<OverlayItem | null> => {
+        if (!item.points.length) return null
 
         const page = item.page || 1
-        const pos = { page, x: item.points[0].x, y: item.points[0].y }
+
+        // Store full metadata in the position JSONB
+        const posPayload = {
+            page,
+            type: item.type,
+            points: item.points,
+            color: item.color,
+            text: item.text // Backup text in position
+        }
 
         try {
-            // We overload createAnnotation to accept the PDF position object
-            // The hook expects { position: [x,y,z], ... } for 3D, but we modified the hook to send whatever we pass?
-            // Actually createAnnotation in useAnnotations expects typed args for 3D.
-            // We need to update useAnnotations to be more flexible or cast here.
-
-            // For now, let's assume we can cast or update the hook slightly.
-            // But wait, the hook specifically takes [number, number, number].
-            // I should update the hook signature to allow generic JSON position.
-
-            // NOTE context: "Create a Supabase SQL schema... position (jsonb)"
-            // So the DB supports it. The hook typescript definition is the bottleneck.
-
-            // Let's force it for now and I will update hook next.
-            await createAnnotation({
-                position: pos, // Pass proper { page, x, y } object
-                normal: [0, 0, 0]
+            const newAnn = await createAnnotation({
+                position: posPayload,
+                normal: [0, 0, 0] // dummy
             } as any, item.text || '')
+
+            if (newAnn) {
+                return { ...item, id: newAnn.id }
+            }
 
         } catch (e) {
             console.error('Failed to save PDF annotation', e)
         }
+        return null
     }
 
     if (!url) {
@@ -75,6 +87,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                 pdfUrl={url}
                 overlayJson={overlayItems}
                 onSaveAnnotation={handleSaveOverlay}
+                onDeleteAnnotation={deleteAnnotation}
             />
         </div>
     )

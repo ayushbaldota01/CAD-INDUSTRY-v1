@@ -80,6 +80,28 @@ create table share_tokens (
   created_at timestamp with time zone default now()
 );
 
+-- 5. Table: snapshots (Camera states and images)
+create table snapshots (
+  id uuid primary key default uuid_generate_v4(),
+  model_id uuid references files(id) on delete cascade not null,
+  camera_params jsonb not null,
+  file_key text not null,
+  width integer,
+  height integer,
+  created_by uuid references auth.users(id),
+  created_at timestamp with time zone default now()
+);
+
+-- 6. Table: snapshot_annotations (Link annotations to snapshots)
+create table snapshot_annotations (
+  id uuid primary key default uuid_generate_v4(),
+  snapshot_id uuid references snapshots(id) on delete cascade not null,
+  annotation_id uuid references annotations(id) on delete cascade not null,
+  u float not null, -- Normalized 2D position X [0-1]
+  v float not null, -- Normalized 2D position Y [0-1]
+  created_at timestamp with time zone default now()
+);
+
 -- Enable Row Level Security (RLS)
 alter table profiles enable row level security;
 alter table files enable row level security;
@@ -110,6 +132,16 @@ create policy "Allow all access to activity_logs"
 
 create policy "Allow all access to share_tokens"
   on share_tokens for all
+  using (true)
+  with check (true);
+
+create policy "Allow all access to snapshots"
+  on snapshots for all
+  using (true)
+  with check (true);
+
+create policy "Allow all access to snapshot_annotations"
+  on snapshot_annotations for all
   using (true)
   with check (true);
 

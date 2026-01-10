@@ -162,7 +162,7 @@ export async function POST(req: Request) {
     try {
         // Parse request body
         const body = await req.json()
-        const { name, type, storage_path, user_id, file_size, project_id } = body
+        const { name, type, storage_path, user_id, file_size } = body
 
         // Generate upload ID for tracking
         uploadId = `upload_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -172,7 +172,6 @@ export async function POST(req: Request) {
             name,
             type,
             user_id,
-            project_id,
             file_size
         })
 
@@ -267,8 +266,7 @@ export async function POST(req: Request) {
                 type: type.toLowerCase(), // Normalize to lowercase
                 storage_path,
                 version: nextVersion,
-                created_by: user_id,
-                project_id: project_id || null
+                created_by: user_id
             })
             .select()
             .single()

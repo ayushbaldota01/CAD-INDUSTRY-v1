@@ -1,5 +1,12 @@
-import { supabase } from '@/lib/supabaseClient'
-import { useState, useEffect } from 'react'
+/**
+ * useProjects Hook - Optimized
+ * 
+ * Handles project CRUD operations with proper error handling
+ * and graceful degradation when offline.
+ */
+
+import { useState, useEffect, useCallback } from 'react'
+import { supabase, isOfflineMode } from '@/lib/supabaseClient'
 
 export type Project = {
     id: string
@@ -13,23 +20,35 @@ export type Project = {
     role?: string
 }
 
-export function useProjects() {
+type UseProjectsReturn = {
+    projects: Project[]
+    loading: boolean
+    error: string | null
+    isOffline: boolean
+    createProject: (name: string, description?: string) => Promise<Project | null>
+    updateProject: (id: string, updates: { name?: string; description?: string }) => Promise<void>
+    deleteProject: (id: string) => Promise<void>
+    refresh: () => Promise<void>
+}
+
+export function useProjects(): UseProjectsReturn {
     const [projects, setProjects] = useState<Project[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
 
-    const fetchProjects = async () => {
+    const fetchProjects = useCallback(async () => {
         try {
             setLoading(true)
-            const { data: { user } } = await supabase.auth.getUser()
+            setError(null)
 
-            let userId = user?.id
+            // Get current user
+            const { data: { user } } = await supabase.auth.getUser()
+            const userId = user?.id
 
             if (!userId) {
-                // FALLBACK FOR TESTING
-                userId = 'mock-admin-user'
-                // setError('Not authenticated')
-                // return
+                // Not logged in - show empty state
+                setProjects([])
+                return
             }
 
             // Get projects where user is a member
@@ -38,9 +57,13 @@ export function useProjects() {
                 .select('project_id, role')
                 .eq('user_id', userId)
 
-            if (memberError) throw memberError
+            if (memberError) {
+                console.warn('Error fetching member data:', memberError)
+                setProjects([])
+                return
+            }
 
-            const projectIds = memberData.map(m => m.project_id)
+            const projectIds = (memberData || []).map(m => m.project_id)
 
             if (projectIds.length === 0) {
                 setProjects([])
@@ -54,66 +77,72 @@ export function useProjects() {
                 .in('id', projectIds)
                 .order('updated_at', { ascending: false })
 
-            if (projectsError) throw projectsError
+            if (projectsError) {
+                console.warn('Error fetching projects:', projectsError)
+                setProjects([])
+                return
+            }
 
             // Attach role to each project
-            const projectsWithRole = projectsData.map(project => ({
+            const projectsWithRole = (projectsData || []).map(project => ({
                 ...project,
-                role: memberData.find(m => m.project_id === project.id)?.role
+                role: memberData?.find(m => m.project_id === project.id)?.role
             }))
 
             setProjects(projectsWithRole)
         } catch (err: any) {
-            console.error('Error fetching projects:', err)
-            setError(err.message)
+            console.error('Error in fetchProjects:', err)
+            setError(err.message || 'Failed to load projects')
         } finally {
             setLoading(false)
         }
-    }
+    }, [])
 
     useEffect(() => {
         fetchProjects()
-    }, [])
+    }, [fetchProjects])
 
-    const createProject = async (name: string, description?: string) => {
+    const createProject = useCallback(async (name: string, description?: string): Promise<Project | null> => {
         try {
             const { data: { user } } = await supabase.auth.getUser()
-            // USE MOCK ID IF NO REAL USER
-            const userId = user?.id || 'mock-admin-user'
+            const userId = user?.id
 
+            if (!userId) {
+                throw new Error('Must be logged in to create projects')
+            }
+
+            // Create project
             const { data, error } = await supabase
                 .from('projects')
                 .insert({
                     name,
-                    description,
+                    description: description || null,
                     created_by: userId
                 })
                 .select()
                 .single()
 
-            if (error) {
-                console.error('Supabase create error:', error)
-                throw error
-            }
+            if (error) throw error
+            if (!data) throw new Error('Failed to create project')
 
-            // Manually add member since trigger might be disabled
+            // Add user as owner
             await supabase.from('project_members').insert({
                 project_id: data.id,
                 user_id: userId,
                 role: 'owner'
             })
 
-            if (error) throw error
-
+            // Refresh list
             await fetchProjects()
+
             return data
         } catch (err: any) {
             console.error('Error creating project:', err)
             throw err
         }
-    }
+    }, [fetchProjects])
 
-    const updateProject = async (id: string, updates: { name?: string; description?: string }) => {
+    const updateProject = useCallback(async (id: string, updates: { name?: string; description?: string }) => {
         try {
             const { error } = await supabase
                 .from('projects')
@@ -127,9 +156,9 @@ export function useProjects() {
             console.error('Error updating project:', err)
             throw err
         }
-    }
+    }, [fetchProjects])
 
-    const deleteProject = async (id: string) => {
+    const deleteProject = useCallback(async (id: string) => {
         try {
             const { error } = await supabase
                 .from('projects')
@@ -143,15 +172,16 @@ export function useProjects() {
             console.error('Error deleting project:', err)
             throw err
         }
-    }
+    }, [fetchProjects])
 
     return {
         projects,
         loading,
         error,
+        isOffline: isOfflineMode,
         createProject,
         updateProject,
         deleteProject,
-        refresh: fetchProjects
+        refresh: fetchProjects,
     }
 }

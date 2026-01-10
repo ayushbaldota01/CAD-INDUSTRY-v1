@@ -20,7 +20,9 @@ export default function ProjectsPage() {
             setShowCreateModal(false)
             setNewProjectName('')
             setNewProjectDesc('')
-            router.push(`/projects/${project.id}`)
+            if (project) {
+                router.push(`/projects/${project.id}`)
+            }
         } catch (err) {
             alert('Failed to create project')
         } finally {
