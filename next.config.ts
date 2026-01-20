@@ -112,6 +112,10 @@ const nextConfig: NextConfig = {
   // Disable x-powered-by header
   poweredByHeader: false,
 
+  // Fix for workspace root detection when multiple lockfiles exist
+  // @ts-ignore - Some Next.js versions might have this in different locations
+  outputFileTracingRoot: process.cwd(),
+
   // Experimental features
   experimental: {
     // Enable optimized package imports
@@ -120,6 +124,15 @@ const nextConfig: NextConfig = {
       '@react-three/drei',
       'three',
     ],
+  },
+
+  // Turbopack configuration to satisfy Next.js 16 requirement
+  // @ts-ignore - Required for build compatibility
+  turbopack: {
+    resolveAlias: {
+      canvas: './src/lib/noop.ts',
+      three: 'three',
+    },
   },
 };
 
