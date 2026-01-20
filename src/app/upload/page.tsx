@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState, useCallback, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import React, { useState, useCallback, useEffect, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useDropzone } from 'react-dropzone'
 import { supabase } from '@/lib/supabaseClient'
 import { demoStore } from '@/lib/demoStore'
@@ -32,8 +32,24 @@ interface UploadError {
     recoverable: boolean
 }
 
-export default function UploadPage() {
+// Wrapper component to handle Suspense for useSearchParams
+export default function UploadPageWrapper() {
+    return (
+        <Suspense fallback={
+            <main className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-8 flex items-center justify-center">
+                <div className="text-slate-600">Loading...</div>
+            </main>
+        }>
+            <UploadPage />
+        </Suspense>
+    )
+}
+
+function UploadPage() {
     const router = useRouter()
+    const searchParams = useSearchParams()
+    const projectId = searchParams.get('project') // Get project ID from URL
+
     const [userId, setUserId] = useState<string | null>(null)
     const [loading, setLoading] = useState(true)
 
@@ -240,7 +256,8 @@ export default function UploadPage() {
                     type: dbType,
                     storage_path: storagePath,
                     user_id: userId,
-                    file_size: file.size
+                    file_size: file.size,
+                    project_id: projectId // Include project ID if available
                 })
             })
 

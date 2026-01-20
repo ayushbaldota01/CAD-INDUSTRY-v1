@@ -162,7 +162,7 @@ export async function POST(req: Request) {
     try {
         // Parse request body
         const body = await req.json()
-        const { name, type, storage_path, user_id, file_size } = body
+        const { name, type, storage_path, user_id, file_size, project_id } = body
 
         // Generate upload ID for tracking
         uploadId = `upload_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -172,7 +172,8 @@ export async function POST(req: Request) {
             name,
             type,
             user_id,
-            file_size
+            file_size,
+            project_id
         })
 
         // ========================================================================
@@ -257,17 +258,25 @@ export async function POST(req: Request) {
         // DATABASE INSERTION
         // ========================================================================
 
-        logUpload('info', 'Inserting file record', { uploadId, version: nextVersion })
+        logUpload('info', 'Inserting file record', { uploadId, version: nextVersion, project_id })
+
+        // Build insert object - only include project_id if provided
+        const insertData: Record<string, any> = {
+            name,
+            type: type.toLowerCase(), // Normalize to lowercase
+            storage_path,
+            version: nextVersion,
+            created_by: user_id
+        }
+
+        // Add project_id if provided (for project-associated uploads)
+        if (project_id) {
+            insertData.project_id = project_id
+        }
 
         const { data: fileRecord, error: insertError } = await supabaseAdmin
             .from('files')
-            .insert({
-                name,
-                type: type.toLowerCase(), // Normalize to lowercase
-                storage_path,
-                version: nextVersion,
-                created_by: user_id
-            })
+            .insert(insertData)
             .select()
             .single()
 

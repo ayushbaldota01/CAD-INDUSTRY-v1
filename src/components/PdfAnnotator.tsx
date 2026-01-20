@@ -34,9 +34,8 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     const [numPages, setNumPages] = useState(0)
     const [pageNumber, setPageNumber] = useState(1)
 
-    // --- ZOOM DISABLED FOR NOW ---
-    // Fixed scale @ 1.2 for good visibility
-    const [scale] = useState(1.2)
+    // Dynamic scale for fit-to-screen
+    const [scale, setScale] = useState(1)
 
     const [tool, setTool] = useState<OverlayItem['type'] | 'none'>('none')
     const [highlightColor, setHighlightColor] = useState('#FFEB3B') // Default Yellow
@@ -55,9 +54,11 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     const scrollContainerRef = useRef<HTMLDivElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
 
-    const [viewportDims, setViewportDims] = useState({ width: 0, height: 0 })
+    const [viewportDims, setViewportDims] = useState({ width: 800, height: 600 })
+    const [isRendering, setIsRendering] = useState(false)
+    const renderTaskRef = useRef<any>(null)
 
-    // Load PDF
+    // Load PDF and get initial dimensions
     useEffect(() => {
         const loadPdf = async () => {
             try {
@@ -65,6 +66,26 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const doc = await loadingTask.promise
                 setPdf(doc)
                 setNumPages(doc.numPages)
+
+                // Pre-calculate initial viewport dimensions for page 1
+                const page = await doc.getPage(1)
+                const viewport = page.getViewport({ scale: 1, rotation: 0 })
+
+                // Set initial dimensions based on container
+                const container = scrollContainerRef.current
+                if (container) {
+                    const availableWidth = container.clientWidth - 80
+                    const availableHeight = container.clientHeight - 80
+                    const scaleX = availableWidth / viewport.width
+                    const scaleY = availableHeight / viewport.height
+                    const fitScale = Math.max(0.5, Math.min(scaleX, scaleY, 2))
+
+                    setScale(fitScale)
+                    setViewportDims({
+                        width: viewport.width * fitScale,
+                        height: viewport.height * fitScale
+                    })
+                }
             } catch (err) {
                 console.error('Error loading PDF:', err)
             }
@@ -72,53 +93,154 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
         if (pdfUrl) loadPdf()
     }, [pdfUrl])
 
-    // Render Page
+    // ========== FIT-TO-SCREEN: Calculate optimal scale and viewport dims ==========
+    useEffect(() => {
+        if (!pdf || !scrollContainerRef.current) return
+
+        const calculateFitScale = async () => {
+            try {
+                const page = await pdf.getPage(pageNumber)
+                // Get the natural dimensions at scale 1 with consistent rotation
+                const viewport = page.getViewport({ scale: 1, rotation: 0 })
+
+                const container = scrollContainerRef.current
+                if (!container) return
+
+                // Available space (with padding)
+                const availableWidth = container.clientWidth - 80  // 40px padding each side
+                const availableHeight = container.clientHeight - 80
+
+                // Guard against zero/negative dimensions
+                if (availableWidth <= 0 || availableHeight <= 0) return
+
+                // Calculate scale to fit both dimensions
+                const scaleX = availableWidth / viewport.width
+                const scaleY = availableHeight / viewport.height
+
+                // Use the smaller scale to ensure it fits, cap at 2x max
+                const fitScale = Math.max(0.5, Math.min(scaleX, scaleY, 2))
+
+                // Update both scale and viewport dims atomically
+                setScale(fitScale)
+                setViewportDims({
+                    width: viewport.width * fitScale,
+                    height: viewport.height * fitScale
+                })
+            } catch (e) {
+                console.error('Error calculating fit scale:', e)
+            }
+        }
+
+        // Debounce resize calculations
+        let resizeTimeout: NodeJS.Timeout
+        const handleResize = () => {
+            clearTimeout(resizeTimeout)
+            resizeTimeout = setTimeout(calculateFitScale, 100)
+        }
+
+        calculateFitScale()
+
+        // Recalculate on resize
+        const resizeObserver = new ResizeObserver(handleResize)
+
+        if (scrollContainerRef.current) {
+            resizeObserver.observe(scrollContainerRef.current)
+        }
+
+        return () => {
+            clearTimeout(resizeTimeout)
+            resizeObserver.disconnect()
+        }
+    }, [pdf, pageNumber])
+    // =============================================================
+
+    // Render Page with proper cancellation and high DPI support
     useEffect(() => {
         if (!pdf || !canvasRef.current || pageNumber > pdf.numPages || pageNumber < 1) return
 
-        let isActive = true
+        // Cancel any previous render task
+        if (renderTaskRef.current) {
+            renderTaskRef.current.cancel()
+            renderTaskRef.current = null
+        }
+
+        setIsRendering(true)
+        let isCancelled = false
+
         const renderPage = async () => {
             try {
                 const page = await pdf.getPage(pageNumber)
-                const viewport = page.getViewport({ scale })
+                if (isCancelled) return
+
+                // Use explicit rotation: 0 to ensure consistent orientation
+                const viewport = page.getViewport({ scale, rotation: 0 })
                 const canvas = canvasRef.current
-                if (!canvas) return
+                if (!canvas || isCancelled) return
+
+                // Set container dimensions FIRST (before rendering)
+                const newDims = { width: viewport.width, height: viewport.height }
+                setViewportDims(newDims)
+
+                // High DPI support for crisp rendering
+                const dpr = Math.min(window.devicePixelRatio || 1, 2)
+                canvas.width = viewport.width * dpr
+                canvas.height = viewport.height * dpr
+                canvas.style.width = `${viewport.width}px`
+                canvas.style.height = `${viewport.height}px`
 
                 const context = canvas.getContext('2d')
-                if (!context) return
+                if (!context || isCancelled) return
 
-                canvas.height = viewport.height
-                canvas.width = viewport.width
+                context.scale(dpr, dpr)
 
-                if (isActive) {
-                    setViewportDims({ width: viewport.width, height: viewport.height })
-                    await page.render({ canvasContext: context, viewport }).promise
+                // Store render task for potential cancellation
+                const renderTask = page.render({ canvasContext: context, viewport })
+                renderTaskRef.current = renderTask
+
+                await renderTask.promise
+                setIsRendering(false)
+            } catch (e: any) {
+                // Only log non-cancellation errors
+                if (e?.name !== 'RenderingCancelledException') {
+                    console.error('PDF render error:', e)
                 }
-            } catch (e) {
-                // Suppress render cancellations
+                setIsRendering(false)
             }
         }
+
         renderPage()
-        return () => { isActive = false }
+
+        return () => {
+            isCancelled = true
+            if (renderTaskRef.current) {
+                renderTaskRef.current.cancel()
+                renderTaskRef.current = null
+            }
+        }
     }, [pdf, pageNumber, scale])
 
     // -------------------------------------------------------------------------
-    // COORDINATE HANDLING
+    // COORDINATE HANDLING - Use viewportDims for accurate normalization
     // -------------------------------------------------------------------------
-    const getNormCoords = (e: React.MouseEvent) => {
-        if (!containerRef.current) return { x: 0, y: 0 }
+    const getNormCoords = useCallback((e: React.MouseEvent) => {
+        if (!containerRef.current || viewportDims.width === 0 || viewportDims.height === 0) {
+            return { x: 0, y: 0 }
+        }
+
         const rect = containerRef.current.getBoundingClientRect()
         const px = e.clientX - rect.left
         const py = e.clientY - rect.top
 
-        let x = px / rect.width
-        let y = py / rect.height
+        // Use viewportDims for normalization to ensure consistency with rendered canvas
+        let x = px / viewportDims.width
+        let y = py / viewportDims.height
 
+        // Clamp to valid range
         x = Math.max(0, Math.min(1, x))
         y = Math.max(0, Math.min(1, y))
 
         return { x, y }
-    }
+    }, [viewportDims])
 
     const handleMouseDown = (e: React.MouseEvent) => {
         if (e.button !== 0) return
@@ -301,10 +423,10 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
         <div className="flex flex-col h-full bg-slate-900 text-white relative">
             <div
                 ref={scrollContainerRef}
-                className="flex-1 overflow-auto bg-slate-950 relative scrollbar-thin scrollbar-thumb-slate-700"
+                className="flex-1 overflow-hidden bg-slate-950 relative"
             >
-                {/* Wrapper ensures resizing doesn't break flow */}
-                <div ref={wrapperRef} className="min-w-full min-h-full flex items-center justify-center p-20 relative">
+                {/* Wrapper centers the PDF canvas */}
+                <div ref={wrapperRef} className="w-full h-full flex items-center justify-center p-4 relative">
                     <div
                         ref={containerRef}
                         className="relative shadow-2xl bg-white origin-center"
@@ -317,8 +439,18 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                         onMouseMove={handleMouseMove}
                         onMouseUp={handleMouseUp}
                     >
-                        <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none" />
-                        <svg className="absolute inset-0 pointer-events-auto" width="100%" height="100%" viewBox={`0 0 ${viewportDims.width} ${viewportDims.height}`}>
+                        <canvas
+                            ref={canvasRef}
+                            className="absolute top-0 left-0 pointer-events-none"
+                            style={{ width: viewportDims.width, height: viewportDims.height }}
+                        />
+                        {/* Loading overlay */}
+                        {isRendering && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
+                                <div className="w-8 h-8 border-4 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
+                            </div>
+                        )}
+                        <svg className="absolute top-0 left-0 pointer-events-auto" width={viewportDims.width} height={viewportDims.height} viewBox={`0 0 ${viewportDims.width} ${viewportDims.height}`}>
                             <defs>
                                 <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
                                     <polygon points="0 0, 10 3.5, 0 7" fill="#ef4444" />
@@ -396,6 +528,29 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                         {['#FFEB3B', '#4CAF50', '#2196F3', '#FF9800'].map(c => (
                             <button key={c} onClick={() => setHighlightColor(c)} className="w-5 h-5 rounded-full border border-white/20 hover:scale-110 transition" style={{ background: c }} />
                         ))}
+                    </div>
+                )}
+
+                {/* Page Navigation */}
+                {numPages > 1 && (
+                    <div className="flex items-center gap-2 p-1.5 bg-slate-900/90 backdrop-blur-xl rounded-2xl border border-slate-700/50 shadow-2xl ring-1 ring-white/10">
+                        <button
+                            onClick={() => setPageNumber(p => Math.max(1, p - 1))}
+                            disabled={pageNumber <= 1}
+                            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${pageNumber <= 1 ? 'text-slate-600 cursor-not-allowed' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
+                        >
+                            ← Prev
+                        </button>
+                        <span className="text-sm font-mono text-slate-300 min-w-[60px] text-center">
+                            {pageNumber} / {numPages}
+                        </span>
+                        <button
+                            onClick={() => setPageNumber(p => Math.min(numPages, p + 1))}
+                            disabled={pageNumber >= numPages}
+                            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${pageNumber >= numPages ? 'text-slate-600 cursor-not-allowed' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
+                        >
+                            Next →
+                        </button>
                     </div>
                 )}
 

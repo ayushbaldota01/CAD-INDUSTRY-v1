@@ -129,9 +129,13 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
     }, [id, isLocal])
 
     // Determine final URL
+    // For PDFs, we need a valid URL or show an error - don't use fake external URLs
     const fileUrl = isLocal
         ? localUrl
-        : remoteUrl || (type === '3D' ? LIGHT_FALLBACK_MODEL : `https://example.com/files/${id}/${name}`)
+        : remoteUrl || (type === '3D' ? LIGHT_FALLBACK_MODEL : '')  // Empty for PDF if no remote URL
+
+    // Show error if PDF has no valid URL
+    const isPdfMissingUrl = type === 'PDF' && !fileUrl
 
     // Handle annotation creation
     const handleAnnotate = useCallback(async (
@@ -225,6 +229,26 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
             <div className="h-screen flex flex-col items-center justify-center text-white bg-slate-950">
                 <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4" />
                 <div className="text-slate-400 animate-pulse">Loading local file...</div>
+            </div>
+        )
+    }
+
+    // PDF file not found in database
+    if (isPdfMissingUrl) {
+        return (
+            <div className="h-screen flex flex-col items-center justify-center text-white bg-slate-950 gap-4">
+                <div className="text-6xl mb-4">📄</div>
+                <h2 className="text-2xl font-bold text-red-400">PDF Not Found</h2>
+                <p className="text-slate-400 max-w-md text-center">
+                    The PDF file could not be loaded from the database.
+                    It may have been deleted or the link has expired.
+                </p>
+                <Link
+                    href="/projects"
+                    className="mt-4 bg-indigo-600 px-6 py-3 rounded-lg font-medium hover:bg-indigo-500 transition-colors flex items-center gap-2"
+                >
+                    ← Back to Projects
+                </Link>
             </div>
         )
     }

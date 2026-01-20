@@ -83,6 +83,13 @@ export const ENGINE_CONFIG = {
 
     // Frame budget for animations (ms)
     frameBudget: 16, // Target 60fps
+
+    // Frame budget for heavy snap operations (ms)
+    // Used to limit CPU time on click events
+    snapBudget: 8, // Half frame budget for responsiveness
+
+    // Circle detection cache settings
+    circleCacheSize: 100, // Max cached circle detection results
 } as const
 
 // ============================================================================

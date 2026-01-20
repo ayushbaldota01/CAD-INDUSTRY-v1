@@ -25,6 +25,46 @@ type ModelLoaderProps = {
 }
 
 // ============================================================================
+// SECURITY: URL VALIDATION
+// ============================================================================
+
+/**
+ * Validate model URL to prevent potential security issues
+ * Allows: http, https, blob protocols
+ * Blocks: javascript:, data: (except for small models), file:
+ */
+function isValidModelUrl(url: string): boolean {
+    if (!url || typeof url !== 'string') return false
+
+    // Trim and lowercase for comparison
+    const trimmed = url.trim()
+    const lower = trimmed.toLowerCase()
+
+    // Block dangerous protocols
+    if (lower.startsWith('javascript:')) return false
+    if (lower.startsWith('vbscript:')) return false
+
+    // Allow blob URLs (used for local file uploads)
+    if (lower.startsWith('blob:')) return true
+
+    // Allow data URLs only for small payloads (< 1MB base64)
+    if (lower.startsWith('data:')) {
+        // Rough check: base64 is ~1.37x larger than original
+        // 1MB = ~1.4M chars in base64
+        return trimmed.length < 1_400_000
+    }
+
+    // Validate http/https URLs
+    try {
+        const parsed = new URL(trimmed)
+        return ['http:', 'https:'].includes(parsed.protocol)
+    } catch {
+        // Relative URLs are allowed
+        return !lower.includes(':') || lower.startsWith('/')
+    }
+}
+
+// ============================================================================
 // SHARED MATERIAL (Reduces draw calls and memory)
 // ============================================================================
 
@@ -233,6 +273,13 @@ export const ModelLoader = memo(function ModelLoader({
     onLoad,
     onClick
 }: ModelLoaderProps) {
+    // ========== SECURITY: Validate URL before loading ==========
+    if (!isValidModelUrl(url)) {
+        console.error('ModelLoader: Invalid or potentially unsafe URL blocked:', url)
+        return <UnsupportedModel name={`Invalid URL: ${name || 'unknown'}`} />
+    }
+    // ============================================================
+
     const fileType = getFileType(name || url)
 
     // Clear GLTF cache on unmount to prevent memory leaks

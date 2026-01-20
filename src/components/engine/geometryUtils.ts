@@ -1,7 +1,55 @@
 
 import * as THREE from 'three'
+import { ENGINE_CONFIG } from '@/lib/config'
 
-// Configuration constants
+// ============================================================================
+// LRU CACHE FOR CIRCLE DETECTION (Performance Optimization)
+// ============================================================================
+
+// Cache structure: Map<cacheKey, { result, timestamp }>
+const circleCache = new Map<string, { result: CircleFeature | null; timestamp: number }>()
+const CACHE_TTL_MS = 5000 // 5 second TTL for cache entries
+
+/**
+ * Get from cache with TTL check
+ */
+function getCachedCircle(key: string): CircleFeature | null | undefined {
+    const entry = circleCache.get(key)
+    if (!entry) return undefined
+
+    // Check if expired
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+        circleCache.delete(key)
+        return undefined
+    }
+
+    return entry.result
+}
+
+/**
+ * Set cache with LRU eviction
+ */
+function setCachedCircle(key: string, result: CircleFeature | null): void {
+    // LRU eviction if cache is full
+    if (circleCache.size >= ENGINE_CONFIG.circleCacheSize) {
+        const firstKey = circleCache.keys().next().value
+        if (firstKey) circleCache.delete(firstKey)
+    }
+
+    circleCache.set(key, { result, timestamp: Date.now() })
+}
+
+/**
+ * Clear cache (call when model changes)
+ */
+export function clearCircleCache(): void {
+    circleCache.clear()
+}
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
 const CIRCLE_FIT_TOLERANCE = 0.05 // RMS error tolerance
 const MIN_CIRCLE_POINTS = 6       // Minimum points to confirm a circle (hexagon+)
 const COPLANAR_TOLERANCE = 0.01   // Tolerance for checking if points are on plane
@@ -155,6 +203,14 @@ export function detectCircularFeature(
     const face = intersection.face
     if (!face) return null
 
+    // ========== CACHE LOOKUP (Performance Optimization) ==========
+    const cacheKey = `${intersection.faceIndex ?? 'noface'}-${object.uuid}`
+    const cached = getCachedCircle(cacheKey)
+    if (cached !== undefined) {
+        return cached // Return cached result (may be null)
+    }
+    // =============================================================
+
     const geometry = object.geometry
     const positionAttr = geometry.getAttribute('position')
 
@@ -206,7 +262,11 @@ export function detectCircularFeature(
         if (!isDuplicate) uniqueCandidates.push(c)
     }
 
-    if (uniqueCandidates.length < MIN_CIRCLE_POINTS) return null
+    if (uniqueCandidates.length < MIN_CIRCLE_POINTS) {
+        // Cache negative result too
+        setCachedCircle(cacheKey, null)
+        return null
+    }
 
     // 3. Attempt Circle Fit
     // This finds ANY circle in the coplanar set. 
@@ -215,5 +275,10 @@ export function detectCircularFeature(
     // But without adjacency, we simply fit ALL close coplanar points.
     // If there are multiple holes nearby, this might fail (RMS error will be high).
 
-    return fitCircleToPoints(uniqueCandidates, _normal)
+    const result = fitCircleToPoints(uniqueCandidates, _normal)
+
+    // Cache the result for future lookups
+    setCachedCircle(cacheKey, result)
+
+    return result
 }

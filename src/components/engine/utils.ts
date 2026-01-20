@@ -193,11 +193,16 @@ export function findNearestEdgePoint(
  * Process a Three.js intersection event into a snap result
  * 
  * Snap priority: vertex > edge > face
- * OPTIMIZATION: Reuses normal vector, avoids unnecessary cloning
+ * OPTIMIZATION: 
+ * - Reuses normal vector, avoids unnecessary cloning
+ * - Frame budget protection for heavy operations
  */
 export function processIntersection(
     intersection: THREE.Intersection
 ): SnapResult {
+    const startTime = performance.now()
+    const snapBudget = ENGINE_CONFIG.snapBudget || 8 // Default 8ms
+
     const point = intersection.point
     const face = intersection.face
     const object = intersection.object
@@ -210,33 +215,36 @@ export function processIntersection(
         _tempNormal.transformDirection(object.matrixWorld)
     }
 
-    // Priority 0: Virtual Snap Points (Center & Quadrants)
-    // We check this first or competitive with vertex.
-    // Detect circle feature on the fly (Note: this involves some geometry scanning)
-    // Optimization: In a full app, this should be cached based on the hit face ID.
-    const circleFeature = detectCircularFeature(intersection, ENGINE_CONFIG.snapTolerance * 5)
+    // Helper to check remaining budget
+    const hasTimeBudget = () => (performance.now() - startTime) < snapBudget
 
+    // Priority 0: Virtual Snap Points (Center & Quadrants)
+    // Only run if we have time budget (this is the heaviest operation)
     let bestVirtualSnap: SnapResult | null = null
     let minVirtualDistSq = Infinity
 
-    if (circleFeature) {
-        const virtualPoints = generateQuadrantPoints(circleFeature)
+    if (hasTimeBudget()) {
+        const circleFeature = detectCircularFeature(intersection, ENGINE_CONFIG.snapTolerance * 5)
 
-        for (const vp of virtualPoints) {
-            const distSq = point.distanceToSquared(vp.point)
-            if (distSq < minVirtualDistSq) {
-                minVirtualDistSq = distSq
-                bestVirtualSnap = {
-                    point: vp.point.toArray(),
-                    normal: vp.normal.toArray(),
-                    type: vp.type as any,
-                    snapped: true
+        if (circleFeature) {
+            const virtualPoints = generateQuadrantPoints(circleFeature)
+
+            for (const vp of virtualPoints) {
+                const distSq = point.distanceToSquared(vp.point)
+                if (distSq < minVirtualDistSq) {
+                    minVirtualDistSq = distSq
+                    bestVirtualSnap = {
+                        point: vp.point.toArray(),
+                        normal: vp.normal.toArray(),
+                        type: vp.type as any,
+                        snapped: true
+                    }
                 }
             }
         }
     }
 
-    // Priority 1: Try to snap to nearest vertex
+    // Priority 1: Try to snap to nearest vertex (fast operation, always run)
     const nearestVertex = findNearestVertex(point, object)
 
     // Compare Virtual vs Vertex
@@ -263,15 +271,17 @@ export function processIntersection(
         }
     }
 
-    // Priority 2: Try to snap to nearest edge
-    const nearestEdgePoint = findNearestEdgePoint(point, object)
+    // Priority 2: Try to snap to nearest edge (only if budget allows)
+    if (hasTimeBudget()) {
+        const nearestEdgePoint = findNearestEdgePoint(point, object)
 
-    if (nearestEdgePoint) {
-        return {
-            point: nearestEdgePoint.toArray() as [number, number, number],
-            normal: _tempNormal.toArray() as [number, number, number],
-            type: 'edge',
-            snapped: true,
+        if (nearestEdgePoint) {
+            return {
+                point: nearestEdgePoint.toArray() as [number, number, number],
+                normal: _tempNormal.toArray() as [number, number, number],
+                type: 'edge',
+                snapped: true,
+            }
         }
     }
 

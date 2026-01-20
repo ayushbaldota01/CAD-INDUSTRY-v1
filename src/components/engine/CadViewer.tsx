@@ -30,8 +30,8 @@ import { SceneSetup } from './SceneSetup'
 import { ModelLoader } from './ModelLoader'
 import { AnnotationsLayer, AnnotationInput } from './Annotations'
 import { MeasurementsLayer, TempMeasurementPoint, SnapIndicator } from './Measurements'
-import { processIntersection, calculateDistance, createId } from './utils'
-import { ENGINE_CONFIG } from '@/lib/config'
+import { processIntersection, calculateDistance, createId, throttle } from './utils'
+import { ENGINE_CONFIG, IS_PROD } from '@/lib/config'
 
 // Types
 import type {
@@ -77,10 +77,13 @@ class ErrorBoundary extends React.Component<
     }
 
     componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-        // Only log in development
-        if (process.env.NODE_ENV === 'development') {
-            console.error('3D Viewer Error:', error, errorInfo)
-        }
+        // Always log errors (but sanitize in production)
+        // In a real app, this would go to error monitoring (Sentry, etc.)
+        console.error(
+            '3D Viewer Error:',
+            IS_PROD ? error.message : error,
+            IS_PROD ? '(details hidden in production)' : errorInfo
+        )
     }
 
     render() {
@@ -91,7 +94,11 @@ class ErrorBoundary extends React.Component<
                         <div className="text-4xl mb-3">⚠️</div>
                         <h3 className="font-bold text-lg mb-2">Load Failed</h3>
                         <p className="text-sm text-red-200 mb-4">
-                            {this.state.error?.message || 'Unknown error occurred'}
+                            {/* Hide detailed error messages in production */}
+                            {IS_PROD
+                                ? 'Unable to load 3D model. Please try again or contact support.'
+                                : (this.state.error?.message || 'Unknown error occurred')
+                            }
                         </p>
                         <button
                             onClick={() => this.setState({ hasError: false, error: null })}
@@ -161,6 +168,16 @@ const ViewerScene = memo(function ViewerScene({
         normal: [number, number, number]
     } | null>(null)
 
+    // ========== PERFORMANCE: Throttled snap indicator update ==========
+    // Prevents excessive state updates during rapid clicking
+    const throttledSetSnapIndicator = React.useMemo(
+        () => throttle((result: SnapResult | null) => {
+            setSnapIndicator(result)
+        }, 50), // 50ms throttle = max 20 updates/second
+        []
+    )
+    // =================================================================
+
     // Update cursor based on active tool
     useEffect(() => {
         const canvas = gl.domElement
@@ -227,7 +244,7 @@ const ViewerScene = memo(function ViewerScene({
 
         // Show snap indicator briefly with proper timer cleanup
         if (snapResult.snapped) {
-            setSnapIndicator(snapResult)
+            throttledSetSnapIndicator(snapResult)
 
             // Clear any existing timer
             if (snapTimerRef.current) {
@@ -235,7 +252,7 @@ const ViewerScene = memo(function ViewerScene({
             }
 
             snapTimerRef.current = setTimeout(() => {
-                setSnapIndicator(null)
+                throttledSetSnapIndicator(null)
                 snapTimerRef.current = null
             }, 500)
         }
@@ -323,8 +340,26 @@ const ViewerScene = memo(function ViewerScene({
             }
         },
         takeSnapshot: () => {
+            const canvas = gl.domElement
+            const maxPixels = 16_000_000 // ~4K resolution limit
+            const currentPixels = canvas.width * canvas.height
+
+            // ========== SECURITY: Guard against excessively large canvases ==========
+            if (currentPixels > maxPixels) {
+                console.warn(`Snapshot: Canvas size (${canvas.width}x${canvas.height}) exceeds limit. Consider reducing resolution.`)
+                // Still allow the snapshot, but log a warning
+                // In a stricter implementation, you could scale down or block
+            }
+            // =========================================================================
+
             gl.render(scene, camera)
-            return gl.domElement.toDataURL('image/png')
+
+            try {
+                return canvas.toDataURL('image/png')
+            } catch (e) {
+                console.error('Snapshot failed:', e)
+                return '' // Return empty string on failure instead of throwing
+            }
         },
         resetView: () => {
             camera.position.set(...ENGINE_CONFIG.camera.position)

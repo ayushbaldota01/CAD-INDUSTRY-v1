@@ -62,7 +62,11 @@ export const useUserRole = () => {
                     .single()
 
                 if (error) {
-                    console.warn('Profile not found, using auth user data:', error.message)
+                    // Expected when profiles table doesn't exist - handled gracefully below
+                    // Only log actual errors, not missing table/rows
+                    if (!error.message?.includes('406') && !error.code?.includes('PGRST')) {
+                        console.warn('Profile fetch issue:', error.message)
+                    }
                 }
 
                 // Always grant full permissions in standalone mode
