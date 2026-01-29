@@ -522,27 +522,88 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const displayDist = convertDistance(item.distance, item.unit || measurementUnit)
                 const displayUnit = item.unit || measurementUnit
                 const dimHovered = hoveredId === item.id
-                const dimOpacity = dimHovered ? 1 : 0.35
+                const dimOpacity = dimHovered ? 1 : 0.25
+
+                // Calculate line angle for better hit detection
+                const lineLength = Math.sqrt(
+                    Math.pow(dimEnd.x - dimStart.x, 2) + Math.pow(dimEnd.y - dimStart.y, 2)
+                )
 
                 return (
                     <g
                         key={item.id}
-                        opacity={dimOpacity}
-                        style={{ transition: 'opacity 0.2s ease', cursor: 'pointer' }}
+                        style={{ cursor: 'pointer' }}
                         onMouseEnter={() => setHoveredId(item.id)}
                         onMouseLeave={() => setHoveredId(null)}
                     >
-                        {/* Dimension line */}
-                        <line x1={dimStart.x} y1={dimStart.y} x2={dimEnd.x} y2={dimEnd.y} stroke="#facc15" strokeWidth={dimHovered ? 3 : 2} />
+                        {/* Invisible wider hit area for easier hovering */}
+                        <line
+                            x1={dimStart.x}
+                            y1={dimStart.y}
+                            x2={dimEnd.x}
+                            y2={dimEnd.y}
+                            stroke="transparent"
+                            strokeWidth="20"
+                        />
 
-                        {/* End markers */}
-                        <circle cx={dimStart.x} cy={dimStart.y} r={dimHovered ? 6 : 4} fill="#facc15" stroke="white" strokeWidth="2" />
-                        <circle cx={dimEnd.x} cy={dimEnd.y} r={dimHovered ? 6 : 4} fill="#facc15" stroke="white" strokeWidth="2" />
+                        {/* Visible dimension line */}
+                        <line
+                            x1={dimStart.x}
+                            y1={dimStart.y}
+                            x2={dimEnd.x}
+                            y2={dimEnd.y}
+                            stroke="#facc15"
+                            strokeWidth={dimHovered ? 3 : 1.5}
+                            opacity={dimOpacity}
+                            style={{ transition: 'all 0.2s ease' }}
+                        />
 
-                        {/* Measurement label */}
-                        <g transform={`translate(${midX}, ${midY})`}>
-                            <rect x="-35" y="-14" width="70" height="28" fill="#1e293b" rx="6" stroke="#facc15" strokeWidth="2" />
-                            <text x="0" y="5" textAnchor="middle" fill="#facc15" fontSize="13" fontWeight="bold" className="pointer-events-none">
+                        {/* End markers - always somewhat visible */}
+                        <circle
+                            cx={dimStart.x}
+                            cy={dimStart.y}
+                            r={dimHovered ? 6 : 3}
+                            fill="#facc15"
+                            stroke="white"
+                            strokeWidth={dimHovered ? 2 : 1}
+                            opacity={dimHovered ? 1 : 0.4}
+                            style={{ transition: 'all 0.2s ease' }}
+                        />
+                        <circle
+                            cx={dimEnd.x}
+                            cy={dimEnd.y}
+                            r={dimHovered ? 6 : 3}
+                            fill="#facc15"
+                            stroke="white"
+                            strokeWidth={dimHovered ? 2 : 1}
+                            opacity={dimHovered ? 1 : 0.4}
+                            style={{ transition: 'all 0.2s ease' }}
+                        />
+
+                        {/* Measurement label - only visible on hover */}
+                        <g
+                            transform={`translate(${midX}, ${midY})`}
+                            opacity={dimHovered ? 1 : 0}
+                            style={{ transition: 'opacity 0.2s ease', pointerEvents: 'none' }}
+                        >
+                            <rect
+                                x={-Math.max(35, lineLength * 0.1)}
+                                y="-14"
+                                width={Math.max(70, lineLength * 0.2)}
+                                height="28"
+                                fill="#1e293b"
+                                rx="6"
+                                stroke="#facc15"
+                                strokeWidth="2"
+                            />
+                            <text
+                                x="0"
+                                y="5"
+                                textAnchor="middle"
+                                fill="#facc15"
+                                fontSize="13"
+                                fontWeight="bold"
+                            >
                                 {displayDist} {displayUnit}
                             </text>
                         </g>
