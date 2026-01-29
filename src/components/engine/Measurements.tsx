@@ -11,15 +11,37 @@ import React, { memo } from 'react'
 import { Html, Line } from '@react-three/drei'
 import type { Measurement } from './types'
 
+import { UnitType } from './types'
+
 type MeasurementLineProps = {
     measurement: Measurement
+    units: UnitType
+}
+
+/**
+ * Helper to format distance based on selected unit
+ */
+const formatDistance = (distance: number, unit: UnitType): string => {
+    switch (unit) {
+        case 'mm':
+            return `${(distance * 1000).toFixed(1)} mm`
+        case 'cm':
+            return `${(distance * 100).toFixed(2)} cm`
+        case 'in':
+            return `${(distance * 39.3701).toFixed(2)} in`
+        case 'ft':
+            return `${(distance * 3.28084).toFixed(3)} ft`
+        default:
+            return `${distance.toFixed(3)} m`
+    }
 }
 
 /**
  * Single measurement line with distance label
  */
 export const MeasurementLine = memo(function MeasurementLine({
-    measurement
+    measurement,
+    units
 }: MeasurementLineProps) {
     const { start, end, distance } = measurement
 
@@ -30,12 +52,29 @@ export const MeasurementLine = memo(function MeasurementLine({
         (start[2] + end[2]) / 2,
     ]
 
-    // Format distance with appropriate units
-    const formattedDistance = measurement.label || (distance < 0.01
-        ? `${(distance * 1000).toFixed(1)} mm`
-        : distance < 1
-            ? `${(distance * 100).toFixed(2)} cm`
-            : `${distance.toFixed(3)} m`)
+    // Format distance with selected units
+    // If a custom label exists (like "Diameter"), we append the converted value
+    const val = formatDistance(distance, units)
+    // If the label is something like "Ø 10.5 mm", we might want to respect that or recalculate.
+    // The previous logic for "Ø" was hardcoded in CadViewer. 
+    // Let's assume for now if there is a label, we just use it, OR we try to be smart.
+    // The user requirement is generic unit switching. 
+    // If the label is just a string, we might just append the value if it's not intrinsic.
+    // Actually, for "Ø", it's a specific dimension. 
+    // Ideally we should store the type of measurement (linear, radius, diameter) instead of a hardcoded string label.
+    // But for this patch, let's just stick to the distance unless the label overrides it completely.
+
+    // Check if label contains "Ø" or "R" and re-format
+    let formattedDistance = val
+    if (measurement.label) {
+        if (measurement.label.startsWith('Ø')) {
+            formattedDistance = `Ø ${val}`
+        } else if (measurement.label.startsWith('R')) {
+            formattedDistance = `R ${val}`
+        } else {
+            formattedDistance = measurement.label
+        }
+    }
 
     return (
         <group name={`measurement-${measurement.id}`}>
@@ -60,7 +99,7 @@ export const MeasurementLine = memo(function MeasurementLine({
 
             {/* Distance label */}
             <Html position={midpoint} center>
-                <div className="bg-yellow-400 text-black text-xs font-bold px-2.5 py-1 rounded shadow-lg whitespace-nowrap select-none">
+                <div className="bg-yellow-400 text-black text-xs font-bold px-2.5 py-1 rounded shadow-lg whitespace-nowrap select-none border border-yellow-500/50">
                     {formattedDistance}
                 </div>
             </Html>
@@ -70,18 +109,20 @@ export const MeasurementLine = memo(function MeasurementLine({
 
 type MeasurementsLayerProps = {
     measurements: Measurement[]
+    units?: UnitType
 }
 
 /**
  * Layer containing all measurement lines
  */
 export const MeasurementsLayer = memo(function MeasurementsLayer({
-    measurements
+    measurements,
+    units = 'mm'
 }: MeasurementsLayerProps) {
     return (
         <group name="measurements-layer">
             {measurements.map(m => (
-                <MeasurementLine key={m.id} measurement={m} />
+                <MeasurementLine key={m.id} measurement={m} units={units} />
             ))}
         </group>
     )

@@ -62,12 +62,18 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
     const [fileData, setFileData] = useState<any>(null)
     const [versions, setVersions] = useState<any[]>([])
     const [activeTool, setActiveTool] = useState<ToolType>('select')
+    const [units, setUnits] = useState<'mm' | 'cm' | 'in' | 'ft'>('mm')
+    const [showClipping, setShowClipping] = useState(false)
     const [fileMissing, setFileMissing] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
+    const [isLoadingRemote, setIsLoadingRemote] = useState(!isLocal)
 
     // Fetch file details and versions if not local
     useEffect(() => {
-        if (isLocal || !id) return
+        if (isLocal || !id) {
+            setIsLoadingRemote(false)
+            return
+        }
 
         const loadRemote = async () => {
             try {
@@ -79,6 +85,7 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
 
                 if (error || !data) {
                     console.warn('File not found in database, using fallback')
+                    setIsLoadingRemote(false)
                     return
                 }
 
@@ -109,6 +116,8 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
                 }
             } catch (e) {
                 console.warn('Error loading remote file:', e)
+            } finally {
+                setIsLoadingRemote(false)
             }
         }
 
@@ -134,8 +143,8 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
         ? localUrl
         : remoteUrl || (type === '3D' ? LIGHT_FALLBACK_MODEL : '')  // Empty for PDF if no remote URL
 
-    // Show error if PDF has no valid URL
-    const isPdfMissingUrl = type === 'PDF' && !fileUrl
+    // Show error if PDF has no valid URL (only AFTER loading is complete)
+    const isPdfMissingUrl = type === 'PDF' && !fileUrl && !isLoadingRemote
 
     // Handle annotation creation
     const handleAnnotate = useCallback(async (
@@ -229,6 +238,16 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
             <div className="h-screen flex flex-col items-center justify-center text-white bg-slate-950">
                 <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4" />
                 <div className="text-slate-400 animate-pulse">Loading local file...</div>
+            </div>
+        )
+    }
+
+    // Loading remote file
+    if (isLoadingRemote && type === 'PDF') {
+        return (
+            <div className="h-screen flex flex-col items-center justify-center text-white bg-slate-950">
+                <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4" />
+                <div className="text-slate-400 animate-pulse">Loading PDF...</div>
             </div>
         )
     }
@@ -337,6 +356,10 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
                             activeTool={activeTool}
                             onToolChange={setActiveTool}
                             canComment={permissions.canComment}
+                            units={units}
+                            onUnitChange={setUnits}
+                            showClipping={showClipping}
+                            onClippingChange={setShowClipping}
                         />
                     </div>
                 )}
@@ -387,6 +410,8 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
                         modelName={name}
                         annotations={annotations}
                         activeTool={activeTool}
+                        units={units}
+                        showClipping={showClipping}
                         onAnnotate={handleAnnotate}
                         onAnnotationSelect={(ann) => setSelectedAnnotation(ann)}
                         onAnnotationUpdate={updateAnnotation}

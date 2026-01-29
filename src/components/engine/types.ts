@@ -52,12 +52,17 @@ export type ViewerRef = {
     fitToModel: () => void
 }
 
+// Measurement units
+export type UnitType = 'mm' | 'cm' | 'in' | 'ft'
+
 // Props for the main viewer component
 export type ViewerProps = {
     modelUrl: string
     modelName?: string
     annotations: Annotation[]
     activeTool: ToolType
+    units?: UnitType
+    showClipping?: boolean
     onAnnotate?: (data: { position: [number, number, number]; normal: [number, number, number] }, text: string) => void
     onAnnotationSelect?: (annotation: Annotation) => void
     onAnnotationUpdate?: (id: string, updates: Partial<Annotation>) => void

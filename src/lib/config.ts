@@ -65,6 +65,19 @@ export const ENGINE_CONFIG = {
         position: [4, 4, 4] as [number, number, number],
     },
 
+    // Units configuration
+    units: {
+        default: 'mm',
+        options: ['mm', 'cm', 'in', 'ft'] as const,
+    },
+
+    // Clipping planes settings
+    clipping: {
+        enabled: true,
+        color: '#3b82f6',
+        opacity: 0.2,
+    },
+
     // Orbit controls
     controls: {
         enableDamping: true,

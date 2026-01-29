@@ -14,6 +14,8 @@ export type OverlayItem = {
     page?: number
     text?: string
     color?: string
+    distance?: number // Real-world distance for dimension
+    unit?: string // Unit of measurement
 }
 
 type Props = {
@@ -58,14 +60,43 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     const [isRendering, setIsRendering] = useState(false)
     const renderTaskRef = useRef<any>(null)
 
-    // Load PDF and get initial dimensions
+    // Measurement & Calibration
+    const [calibrationScale, setCalibrationScale] = useState<number | null>(null) // pixels per mm
+    const [isCalibrating, setIsCalibrating] = useState(false)
+    const [measurementUnit, setMeasurementUnit] = useState<'mm' | 'cm' | 'in' | 'ft'>('mm')
+    const [loadingProgress, setLoadingProgress] = useState(0)
+
+    // Load PDF with optimized settings
     useEffect(() => {
+        if (!pdfUrl) return
+
+        let cancelled = false
+
         const loadPdf = async () => {
             try {
-                const loadingTask = pdfjsLib.getDocument(pdfUrl)
+                setLoadingProgress(10)
+
+                // Use range requests and disable stream for faster initial load
+                const loadingTask = pdfjsLib.getDocument({
+                    url: pdfUrl,
+                    cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+                    cMapPacked: true,
+                    disableStream: false,
+                    disableAutoFetch: false,
+                })
+
+                loadingTask.onProgress = (progress: { loaded: number; total: number }) => {
+                    if (progress.total > 0) {
+                        setLoadingProgress(Math.min(90, Math.round((progress.loaded / progress.total) * 80) + 10))
+                    }
+                }
+
                 const doc = await loadingTask.promise
+                if (cancelled) return
+
                 setPdf(doc)
                 setNumPages(doc.numPages)
+                setLoadingProgress(95)
 
                 // Pre-calculate initial viewport dimensions for page 1
                 const page = await doc.getPage(1)
@@ -86,11 +117,19 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                         height: viewport.height * fitScale
                     })
                 }
+
+                setLoadingProgress(100)
             } catch (err) {
                 console.error('Error loading PDF:', err)
+                setLoadingProgress(0)
             }
         }
-        if (pdfUrl) loadPdf()
+
+        loadPdf()
+
+        return () => {
+            cancelled = true
+        }
     }, [pdfUrl])
 
     // ========== FIT-TO-SCREEN: Calculate optimal scale and viewport dims ==========
@@ -282,14 +321,81 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
             return
         }
 
+        // Click-to-place for dimension and calibration
+        if (tool === 'dimension' || isCalibrating) {
+            if (currentPath.length === 0) {
+                // First click - set start point
+                setCurrentPath([coords])
+            } else {
+                // Second click - complete measurement
+                const p1 = currentPath[0]
+                const p2 = coords
+
+                // Calculate pixel distance
+                const dx = (p2.x - p1.x) * viewportDims.width
+                const dy = (p2.y - p1.y) * viewportDims.height
+                const pixelDistance = Math.sqrt(dx * dx + dy * dy)
+
+                if (isCalibrating) {
+                    const knownDistance = prompt('Enter the known distance (in mm):')
+                    if (knownDistance && !isNaN(parseFloat(knownDistance))) {
+                        const distance = parseFloat(knownDistance)
+                        const scale = pixelDistance / distance
+                        setCalibrationScale(scale)
+                    }
+                    setIsCalibrating(false)
+                } else if (tool === 'dimension') {
+                    if (!calibrationScale) {
+                        alert('Please calibrate first!')
+                        setCurrentPath([])
+                        return
+                    }
+
+                    const distanceMm = pixelDistance / calibrationScale
+
+                    const newItem: OverlayItem = {
+                        id: uuidv4(),
+                        type: 'dimension',
+                        points: [p1, p2],
+                        page: pageNumber,
+                        color: '#facc15',
+                        distance: distanceMm,
+                        unit: measurementUnit
+                    }
+
+                        ; (async () => {
+                            const saved = await onSaveAnnotation?.(newItem) as OverlayItem | undefined
+                            if (saved) {
+                                setHistory(prev => [...prev, { type: 'add', item: saved }])
+                            }
+                        })()
+                }
+
+                setCurrentPath([])
+            }
+            return
+        }
+
         setCurrentPath([coords])
     }
 
+    // Track mouse position for dimension preview
+    const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null)
+
     const handleMouseMove = (e: React.MouseEvent) => {
+        const coords = getNormCoords(e)
+
+        // Always track hover for dimension/calibration preview
+        if ((tool === 'dimension' || isCalibrating) && currentPath.length === 1) {
+            setHoverPos(coords)
+        } else {
+            setHoverPos(null)
+        }
+
         if (tool === 'none' || currentPath.length === 0) return
         if (tool === 'comment' || tool === 'issue') return
+        if (tool === 'dimension' || isCalibrating) return // Don't drag for these
 
-        const coords = getNormCoords(e)
         if (tool === 'freehand') {
             const last = currentPath[currentPath.length - 1]
             const dist = Math.sqrt(Math.pow(coords.x - last.x, 2) + Math.pow(coords.y - last.y, 2))
@@ -304,6 +410,7 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     const handleMouseUp = () => {
         if (tool === 'none' || currentPath.length === 0) return
         if (tool === 'comment' || tool === 'issue') return
+        if (tool === 'dimension' || isCalibrating) return // Handled by click-to-place
 
         const newItem: OverlayItem = {
             id: uuidv4(),
@@ -395,6 +502,53 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const p2 = denorm(item.points[item.points.length - 1])
                 return <rect key={item.id} x={Math.min(p1.x, p2.x)} y={Math.min(p1.y, p2.y)} width={Math.abs(p2.x - p1.x)} height={Math.abs(p2.y - p1.y)} fill={item.color} fillOpacity="0.4" {...commonProps} />
 
+            case 'dimension':
+                if (item.points.length < 2 || !item.distance) return null
+                const dimStart = denorm(item.points[0])
+                const dimEnd = denorm(item.points[item.points.length - 1])
+                const midX = (dimStart.x + dimEnd.x) / 2
+                const midY = (dimStart.y + dimEnd.y) / 2
+
+                // Convert distance to selected unit
+                const convertDistance = (mm: number, unit: string) => {
+                    switch (unit) {
+                        case 'cm': return (mm / 10).toFixed(2)
+                        case 'in': return (mm / 25.4).toFixed(2)
+                        case 'ft': return (mm / 304.8).toFixed(3)
+                        default: return mm.toFixed(1)
+                    }
+                }
+
+                const displayDist = convertDistance(item.distance, item.unit || measurementUnit)
+                const displayUnit = item.unit || measurementUnit
+                const dimHovered = hoveredId === item.id
+                const dimOpacity = dimHovered ? 1 : 0.35
+
+                return (
+                    <g
+                        key={item.id}
+                        opacity={dimOpacity}
+                        style={{ transition: 'opacity 0.2s ease', cursor: 'pointer' }}
+                        onMouseEnter={() => setHoveredId(item.id)}
+                        onMouseLeave={() => setHoveredId(null)}
+                    >
+                        {/* Dimension line */}
+                        <line x1={dimStart.x} y1={dimStart.y} x2={dimEnd.x} y2={dimEnd.y} stroke="#facc15" strokeWidth={dimHovered ? 3 : 2} />
+
+                        {/* End markers */}
+                        <circle cx={dimStart.x} cy={dimStart.y} r={dimHovered ? 6 : 4} fill="#facc15" stroke="white" strokeWidth="2" />
+                        <circle cx={dimEnd.x} cy={dimEnd.y} r={dimHovered ? 6 : 4} fill="#facc15" stroke="white" strokeWidth="2" />
+
+                        {/* Measurement label */}
+                        <g transform={`translate(${midX}, ${midY})`}>
+                            <rect x="-35" y="-14" width="70" height="28" fill="#1e293b" rx="6" stroke="#facc15" strokeWidth="2" />
+                            <text x="0" y="5" textAnchor="middle" fill="#facc15" fontSize="13" fontWeight="bold" className="pointer-events-none">
+                                {displayDist} {displayUnit}
+                            </text>
+                        </g>
+                    </g>
+                )
+
             case 'text':
             case 'callout':
             case 'comment':
@@ -433,7 +587,7 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                         style={{
                             width: viewportDims.width,
                             height: viewportDims.height,
-                            cursor: tool !== 'none' ? 'crosshair' : 'default'
+                            cursor: (tool !== 'none' || isCalibrating) ? 'crosshair' : 'default'
                         }}
                         onMouseDown={handleMouseDown}
                         onMouseMove={handleMouseMove}
@@ -444,10 +598,24 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                             className="absolute top-0 left-0 pointer-events-none"
                             style={{ width: viewportDims.width, height: viewportDims.height }}
                         />
-                        {/* Loading overlay */}
-                        {isRendering && (
+                        {/* Initial loading overlay with progress */}
+                        {loadingProgress > 0 && loadingProgress < 100 && !pdf && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 z-20">
+                                <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4" />
+                                <div className="text-slate-400 text-sm mb-2">Loading PDF...</div>
+                                <div className="w-32 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                                    <div
+                                        className="h-full bg-indigo-500 transition-all duration-300"
+                                        style={{ width: `${loadingProgress}%` }}
+                                    />
+                                </div>
+                                <div className="text-slate-500 text-xs mt-1">{loadingProgress}%</div>
+                            </div>
+                        )}
+                        {/* Page rendering overlay */}
+                        {isRendering && pdf && (
                             <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10">
-                                <div className="w-8 h-8 border-4 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
+                                <div className="w-6 h-6 border-3 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
                             </div>
                         )}
                         <svg className="absolute top-0 left-0 pointer-events-auto" width={viewportDims.width} height={viewportDims.height} viewBox={`0 0 ${viewportDims.width} ${viewportDims.height}`}>
@@ -458,7 +626,69 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                             </defs>
                             {overlayJson.map((item, idx) => renderOverlayItem(item, idx))}
 
-                            {currentPath.length > 0 && tool !== 'none' && (
+                            {/* Dimension/Calibration preview line */}
+                            {currentPath.length === 1 && hoverPos && (tool === 'dimension' || isCalibrating) && (
+                                <g opacity={0.8}>
+                                    {/* Preview line */}
+                                    <line
+                                        x1={currentPath[0].x * viewportDims.width}
+                                        y1={currentPath[0].y * viewportDims.height}
+                                        x2={hoverPos.x * viewportDims.width}
+                                        y2={hoverPos.y * viewportDims.height}
+                                        stroke={isCalibrating ? '#22c55e' : '#facc15'}
+                                        strokeWidth="2"
+                                        strokeDasharray="6,4"
+                                    />
+                                    {/* Start point */}
+                                    <circle
+                                        cx={currentPath[0].x * viewportDims.width}
+                                        cy={currentPath[0].y * viewportDims.height}
+                                        r="6"
+                                        fill={isCalibrating ? '#22c55e' : '#facc15'}
+                                        stroke="white"
+                                        strokeWidth="2"
+                                    />
+                                    {/* Hover point */}
+                                    <circle
+                                        cx={hoverPos.x * viewportDims.width}
+                                        cy={hoverPos.y * viewportDims.height}
+                                        r="5"
+                                        fill="none"
+                                        stroke={isCalibrating ? '#22c55e' : '#facc15'}
+                                        strokeWidth="2"
+                                        strokeDasharray="3,2"
+                                    />
+                                    {/* Live distance label */}
+                                    {calibrationScale && !isCalibrating && (
+                                        <g transform={`translate(${((currentPath[0].x + hoverPos.x) / 2) * viewportDims.width}, ${((currentPath[0].y + hoverPos.y) / 2) * viewportDims.height - 15})`}>
+                                            <rect x="-30" y="-10" width="60" height="20" fill="#1e293b" rx="4" opacity="0.9" />
+                                            <text x="0" y="4" textAnchor="middle" fill="#facc15" fontSize="11" fontWeight="bold">
+                                                {(() => {
+                                                    const dx = (hoverPos.x - currentPath[0].x) * viewportDims.width
+                                                    const dy = (hoverPos.y - currentPath[0].y) * viewportDims.height
+                                                    const px = Math.sqrt(dx * dx + dy * dy)
+                                                    const mm = px / calibrationScale
+                                                    return `${mm.toFixed(1)} mm`
+                                                })()}
+                                            </text>
+                                        </g>
+                                    )}
+                                    {isCalibrating && (
+                                        <text
+                                            x={((currentPath[0].x + hoverPos.x) / 2) * viewportDims.width}
+                                            y={((currentPath[0].y + hoverPos.y) / 2) * viewportDims.height - 12}
+                                            textAnchor="middle"
+                                            fill="#22c55e"
+                                            fontSize="11"
+                                            fontWeight="bold"
+                                        >
+                                            Click to set reference
+                                        </text>
+                                    )}
+                                </g>
+                            )}
+
+                            {currentPath.length > 0 && tool !== 'none' && tool !== 'dimension' && !isCalibrating && (
                                 <g opacity={0.6}>
                                     {tool === 'highlight'
                                         ? <rect
@@ -523,6 +753,31 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
 
             {/* Toolbar */}
             <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3 z-[100]">
+                {/* Calibration & Unit Controls */}
+                {(calibrationScale !== null || isCalibrating) && (
+                    <div className="flex items-center gap-2 p-1.5 bg-slate-900/90 backdrop-blur-xl rounded-2xl border border-slate-700/50 shadow-2xl ring-1 ring-white/10">
+                        <div className="text-xs text-slate-300 px-2">
+                            {isCalibrating ? (
+                                <span className="text-yellow-400 animate-pulse">Draw line & enter known distance...</span>
+                            ) : (
+                                <span>✓ Calibrated ({calibrationScale?.toFixed(2)} px/mm)</span>
+                            )}
+                        </div>
+                        <div className="w-px h-4 bg-slate-700" />
+                        <div className="flex gap-1">
+                            {['mm', 'cm', 'in', 'ft'].map(u => (
+                                <button
+                                    key={u}
+                                    onClick={() => setMeasurementUnit(u as any)}
+                                    className={`px-2 py-1 text-[10px] uppercase rounded transition ${measurementUnit === u ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+                                >
+                                    {u}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
                 {tool === 'highlight' && (
                     <div className="flex gap-2 p-1.5 bg-slate-900/90 backdrop-blur rounded-full border border-slate-700 shadow-xl">
                         {['#FFEB3B', '#4CAF50', '#2196F3', '#FF9800'].map(c => (
@@ -563,6 +818,15 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                     <ToolBtn active={tool === 'highlight'} onClick={() => setTool('highlight')} icon={<HighlightIcon />} title="Highlight Area" />
                     <ToolBtn active={tool === 'freehand'} onClick={() => setTool('freehand')} icon={<PencilIcon />} title="Draw" />
                     <div className="w-px h-6 bg-slate-700/50 mx-1" />
+                    <ToolBtn
+                        active={isCalibrating}
+                        onClick={() => setIsCalibrating(!isCalibrating)}
+                        icon={<RulerIcon />}
+                        title="Calibrate Scale"
+                        color="text-yellow-400 hover:bg-yellow-500/10"
+                    />
+                    <ToolBtn active={tool === 'dimension'} onClick={() => setTool('dimension')} icon={<MeasureIcon />} title="Measure Distance" color="text-yellow-400 hover:bg-yellow-500/10" />
+                    <div className="w-px h-6 bg-slate-700/50 mx-1" />
                     <ToolBtn onClick={handleUndo} disabled={history.length === 0} icon={<UndoIcon />} title="Undo" />
                     <ToolBtn onClick={handleRedo} disabled={redoStack.length === 0} icon={<RedoIcon />} title="Redo" />
                 </div>
@@ -584,3 +848,5 @@ const HighlightIcon = () => <svg className="w-5 h-5" fill="none" stroke="current
 const PencilIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
 const UndoIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
 const RedoIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l6 6m6-6l-6-6" /></svg>
+const RulerIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" /></svg>
+const MeasureIcon = () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>

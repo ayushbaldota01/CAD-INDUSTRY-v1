@@ -60,16 +60,26 @@ const TOOLS: Tool[] = [
     },
 ]
 
+import type { UnitType } from '@/components/engine/types'
+
 type ViewerToolbarProps = {
     activeTool: ToolType
     onToolChange: (tool: ToolType) => void
     canComment?: boolean
+    units?: UnitType
+    onUnitChange?: (units: UnitType) => void
+    showClipping?: boolean
+    onClippingChange?: (show: boolean) => void
 }
 
 export const ViewerToolbar = memo(function ViewerToolbar({
     activeTool,
     onToolChange,
     canComment = true,
+    units = 'mm',
+    onUnitChange,
+    showClipping = false,
+    onClippingChange,
 }: ViewerToolbarProps) {
     const handleClick = useCallback((tool: ToolType) => {
         onToolChange(tool)
@@ -145,6 +155,55 @@ export const ViewerToolbar = memo(function ViewerToolbar({
 
             {/* Divider */}
             <div className="w-px h-6 bg-slate-700 mx-1" />
+
+            {/* Advanced Controls */}
+            {onClippingChange && (
+                <button
+                    onClick={() => onClippingChange(!showClipping)}
+                    className={`
+                        relative p-2 rounded-md transition-all duration-150 group
+                        ${showClipping
+                            ? 'bg-indigo-600/50 text-indigo-100 border border-indigo-500/50'
+                            : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                        }
+                    `}
+                    title="Toggle Section Cut"
+                >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                    </svg>
+
+                    <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                        <div className="bg-slate-900 text-white text-[10px] font-medium px-2 py-1 rounded whitespace-nowrap border border-slate-700">
+                            Section Cut
+                        </div>
+                    </div>
+                </button>
+            )}
+
+            {onUnitChange && (
+                <div className="relative group/units">
+                    <button
+                        className="p-2 text-xs font-mono text-slate-400 hover:text-white hover:bg-slate-700 rounded-md transition-colors uppercase w-10 text-center"
+                    >
+                        {units}
+                    </button>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-16 bg-slate-900 border border-slate-700 rounded-lg shadow-xl overflow-hidden hidden group-hover/units:block p-1">
+                        {['mm', 'cm', 'in', 'ft'].map((u) => (
+                            <button
+                                key={u}
+                                onClick={() => onUnitChange(u as any)}
+                                className={`block w-full text-center px-1 py-1.5 text-[10px] uppercase rounded hover:bg-slate-800 transition ${u === units ? 'bg-indigo-600 text-white' : 'text-slate-300'}`}
+                            >
+                                {u}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Divider if we have advanced controls */}
+            {(onClippingChange || onUnitChange) && <div className="w-px h-6 bg-slate-700 mx-1" />}
 
             {/* Active tool name */}
             <span className="text-xs font-medium text-slate-400 px-2 min-w-[70px]">

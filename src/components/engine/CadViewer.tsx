@@ -30,6 +30,7 @@ import { SceneSetup } from './SceneSetup'
 import { ModelLoader } from './ModelLoader'
 import { AnnotationsLayer, AnnotationInput } from './Annotations'
 import { MeasurementsLayer, TempMeasurementPoint, SnapIndicator } from './Measurements'
+import { ClippingPlanes } from './ClippingPlanes'
 import { processIntersection, calculateDistance, createId, throttle } from './utils'
 import { ENGINE_CONFIG, IS_PROD } from '@/lib/config'
 
@@ -148,6 +149,8 @@ const ViewerScene = memo(function ViewerScene({
     onLoad,
     onError,
     forwardedRef,
+    units,
+    showClipping,
 }: ViewerSceneProps) {
     const { camera, gl, scene, invalidate } = useThree()
     const controlsRef = useRef<any>(null)
@@ -416,7 +419,7 @@ const ViewerScene = memo(function ViewerScene({
             )}
 
             {/* Measurements */}
-            <MeasurementsLayer measurements={measurements} />
+            <MeasurementsLayer measurements={measurements} units={units} />
 
             {/* Temp measurement point */}
             {tempPoint && <TempMeasurementPoint position={tempPoint} />}
@@ -428,6 +431,9 @@ const ViewerScene = memo(function ViewerScene({
                     type={snapIndicator.type}
                 />
             )}
+
+            {/* Clipping Planes */}
+            <ClippingPlanes enabled={showClipping || false} />
 
             {/* Controls */}
             <OrbitControls
