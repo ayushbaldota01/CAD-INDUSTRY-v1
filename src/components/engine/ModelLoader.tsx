@@ -13,7 +13,7 @@ import { useLoader, useThree } from '@react-three/fiber'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import * as THREE from 'three'
-import { ENGINE_CONFIG } from '@/lib/config'
+import { ENGINE_CONFIG, FALLBACK_MODEL_URL } from '@/lib/config'
 import { getFileType } from './types'
 import { disposeObject } from './utils'
 
@@ -87,27 +87,38 @@ const sharedOBJMaterial = new THREE.MeshStandardMaterial({
 // ============================================================================
 
 const GltfModel = memo(function GltfModel({ url, onLoad, onClick }: ModelLoaderProps) {
-    const gltf = useGLTF(url, ENGINE_CONFIG.dracoUrl)
+    const { scene } = useGLTF(url, ENGINE_CONFIG.dracoUrl, undefined, (loader) => {
+        // Optional: configure loader extensions here
+    })
+
     const { gl } = useThree()
 
     useEffect(() => {
-        if (gltf?.scene) {
+        if (scene) {
             // Optimize geometry for rendering
-            gltf.scene.traverse((child) => {
+            scene.traverse((child) => {
                 if (child instanceof THREE.Mesh) {
                     // Enable frustum culling
                     child.frustumCulled = true
 
                     // Compute bounding sphere for better culling
                     if (child.geometry && !child.geometry.boundingSphere) {
-                        child.geometry.computeBoundingSphere()
+                        try {
+                            child.geometry.computeBoundingSphere()
+                        } catch (e) {
+                            // Ignore faulty geometry
+                        }
                     }
+
+                    // Enable shadow casting/receiving for realism
+                    child.castShadow = true
+                    child.receiveShadow = true
                 }
             })
 
             onLoad()
         }
-    }, [gltf, onLoad])
+    }, [scene, onLoad])
 
     // Handle WebGL context loss
     useEffect(() => {
@@ -130,16 +141,21 @@ const GltfModel = memo(function GltfModel({ url, onLoad, onClick }: ModelLoaderP
         }
     }, [gl])
 
-    if (!gltf?.scene) return null
+    if (!scene) return null
 
     return (
         <primitive
-            object={gltf.scene}
+            object={scene}
             onClick={onClick}
             dispose={null} // We handle disposal manually
+            castShadow
+            receiveShadow
         />
     )
 })
+
+// Pre-load the draco decoder to prevent stutter
+useGLTF.preload(FALLBACK_MODEL_URL, ENGINE_CONFIG.dracoUrl)
 
 // ============================================================================
 // STL Model Loader
