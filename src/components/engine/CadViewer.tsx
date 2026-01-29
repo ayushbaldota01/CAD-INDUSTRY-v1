@@ -440,6 +440,9 @@ const ViewerScene = memo(function ViewerScene({
                 ref={controlsRef}
                 makeDefault
                 enabled={!annotationPos}
+                enablePan={true}
+                enableRotate={true}
+                enableZoom={true}
                 enableDamping={ENGINE_CONFIG.controls.enableDamping}
                 dampingFactor={ENGINE_CONFIG.controls.dampingFactor}
                 rotateSpeed={ENGINE_CONFIG.controls.rotateSpeed}
@@ -447,6 +450,8 @@ const ViewerScene = memo(function ViewerScene({
                 panSpeed={ENGINE_CONFIG.controls.panSpeed}
                 minDistance={ENGINE_CONFIG.controls.minDistance}
                 maxDistance={ENGINE_CONFIG.controls.maxDistance}
+                maxPolarAngle={Math.PI} // Allow full vertical rotation
+                minPolarAngle={0}
             />
         </>
     )
@@ -477,7 +482,7 @@ const CadViewer = forwardRef<ViewerRef, ViewerProps>((props, ref) => {
                 }}
                 dpr={dpr}
                 performance={{ min: 0.5 }}
-                frameloop="demand" // Only render when needed - saves battery/CPU
+                frameloop="always" // Changed from "demand" to enable smooth OrbitControls
                 onCreated={({ gl }) => {
                     // Enable tone mapping for better colors
                     gl.toneMapping = THREE.ACESFilmicToneMapping
