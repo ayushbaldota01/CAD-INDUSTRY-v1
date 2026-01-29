@@ -7,9 +7,10 @@ interface ShareModalProps {
     fileId: string
     fileName: string
     onClose: () => void
+    onShare?: () => void
 }
 
-export default function ShareModal({ fileId, fileName, onClose }: ShareModalProps) {
+export default function ShareModal({ fileId, fileName, onClose, onShare }: ShareModalProps) {
     const [accessMode, setAccessMode] = useState<'read-only' | 'comment-only'>('read-only')
     const [expiresInDays, setExpiresInDays] = useState(7)
     const [shareUrl, setShareUrl] = useState<string>('')
@@ -45,6 +46,7 @@ export default function ShareModal({ fileId, fileName, onClose }: ShareModalProp
 
             if (res.ok) {
                 setShareUrl(data.shareUrl)
+                onShare?.()
             } else {
                 alert('Failed to generate share link: ' + data.error)
             }

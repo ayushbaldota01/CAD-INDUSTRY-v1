@@ -7,9 +7,10 @@ interface ExportModalProps {
     fileId: string
     fileName: string
     onClose: () => void
+    onExport?: (format: 'csv' | 'pdf') => void
 }
 
-export default function ExportModal({ fileId, fileName, onClose }: ExportModalProps) {
+export default function ExportModal({ fileId, fileName, onClose, onExport }: ExportModalProps) {
     const [exporting, setExporting] = useState(false)
     const [exportType, setExportType] = useState<'csv' | 'pdf'>('csv')
 
@@ -44,6 +45,7 @@ export default function ExportModal({ fileId, fileName, onClose }: ExportModalPr
             window.URL.revokeObjectURL(url)
             document.body.removeChild(a)
 
+            onExport?.('csv')
             alert('CSV exported successfully!')
         } catch (e: any) {
             alert('Export failed: ' + e.message)
@@ -73,6 +75,7 @@ export default function ExportModal({ fileId, fileName, onClose }: ExportModalPr
             if (printWindow) {
                 printWindow.document.write(html)
                 printWindow.document.close()
+                onExport?.('pdf')
             }
 
         } catch (e: any) {

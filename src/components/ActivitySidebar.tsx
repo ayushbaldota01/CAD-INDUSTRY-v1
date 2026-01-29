@@ -16,13 +16,20 @@ export default function ActivitySidebar({ fileId, onClose }: ActivitySidebarProp
         // Make actions more readable
         const actionMap: Record<string, { icon: string; label: string; color: string }> = {
             'file_uploaded': { icon: '📤', label: 'File Uploaded', color: 'text-green-400' },
+            'file_viewed': { icon: '👁️', label: 'File Viewed', color: 'text-blue-400' },
+            'file_shared': { icon: '🔗', label: 'File Shared', color: 'text-cyan-400' },
+            'file_exported': { icon: '📥', label: 'File Exported', color: 'text-amber-400' },
+            'file_exported_csv': { icon: '📊', label: 'Exported as CSV', color: 'text-amber-400' },
+            'file_exported_pdf': { icon: '📄', label: 'Exported as PDF', color: 'text-amber-400' },
             'version_created': { icon: '🔄', label: 'New Version Created', color: 'text-blue-400' },
             'annotation_added': { icon: '💬', label: 'Annotation Added', color: 'text-purple-400' },
             'annotation_edited': { icon: '✏️', label: 'Annotation Edited', color: 'text-yellow-400' },
             'annotation_deleted': { icon: '🗑️', label: 'Annotation Deleted', color: 'text-red-400' },
+            'measurement_added': { icon: '📏', label: 'Measurement Added', color: 'text-yellow-400' },
+            'snapshot_created': { icon: '📸', label: 'Snapshot Created', color: 'text-indigo-400' },
         }
 
-        return actionMap[action] || { icon: '📝', label: action, color: 'text-slate-400' }
+        return actionMap[action] || { icon: '📝', label: action.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()), color: 'text-slate-400' }
     }
 
     const formatTimestamp = (timestamp: string) => {

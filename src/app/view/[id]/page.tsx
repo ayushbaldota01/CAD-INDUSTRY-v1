@@ -13,6 +13,7 @@ import dynamic from 'next/dynamic'
 import PDFViewer from '@/components/PDFViewer'
 import type { CadViewerRef, Annotation } from '@/components/CadViewer'
 import { useAnnotations } from '@/hooks/useAnnotations'
+import { useActivityLog } from '@/hooks/useActivityLog'
 import CommentsSidebar from '@/components/CommentsSidebar'
 import ActivitySidebar from '@/components/ActivitySidebar'
 import ShareModal from '@/components/ShareModal'
@@ -50,6 +51,7 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
     const { id } = React.use(params)
 
     const { annotations, createAnnotation, updateAnnotation } = useAnnotations(id)
+    const { logActivity } = useActivityLog(id)
     const { permissions, role } = useUserRole()
 
     const viewerRef = useRef<CadViewerRef>(null)
@@ -137,6 +139,13 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
         }
     }, [id, isLocal])
 
+    // Log file view activity (only once on mount for remote files)
+    useEffect(() => {
+        if (!isLocal && id && id !== 'demo') {
+            logActivity('file_viewed')
+        }
+    }, [id, isLocal, logActivity])
+
     // Determine final URL
     // For PDFs, we need a valid URL or show an error - don't use fake external URLs
     const fileUrl = isLocal
@@ -158,11 +167,12 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
 
         try {
             await createAnnotation(data, text)
+            logActivity('annotation_added')
         } catch (e: any) {
             console.error('Annotation failed:', e)
             alert('Annotation failed: ' + e.message)
         }
-    }, [permissions.canComment, role, createAnnotation])
+    }, [permissions.canComment, role, createAnnotation, logActivity])
 
     // Handle snapshot
     const handleSnapshot = useCallback(async () => {
@@ -196,6 +206,7 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
             const json = await res.json()
 
             if (res.ok) {
+                logActivity('snapshot_created')
                 alert(`Snapshot saved! URL: ${json.url}`)
             } else {
                 throw new Error(json.error)
@@ -204,7 +215,7 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
             console.error('Snapshot error:', err)
             alert('Snapshot failed: ' + err.message)
         }
-    }, [annotations, id])
+    }, [annotations, id, logActivity])
 
     // Handle viewer error
     const handleViewerError = useCallback((error: Error) => {
@@ -443,6 +454,7 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
                     fileId={id}
                     fileName={name}
                     onClose={() => setShowShareModal(false)}
+                    onShare={() => logActivity('file_shared')}
                 />
             )}
 
@@ -451,6 +463,7 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
                     fileId={id}
                     fileName={name}
                     onClose={() => setShowExportModal(false)}
+                    onExport={(format) => logActivity(`file_exported_${format}`)}
                 />
             )}
         </div>
