@@ -16,6 +16,12 @@ export type OverlayItem = {
     color?: string
     distance?: number // Real-world distance for dimension
     unit?: string // Unit of measurement
+    // Phase 2: Balloon Metadata
+    balloonNo?: number
+    entityType?: 'Dimension' | 'Tolerance' | 'Note' | 'Specification'
+    drawingReference?: string
+    description?: string
+    remarks?: string
 }
 
 type Props = {
@@ -616,18 +622,70 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
             case 'issue':
                 if (item.points.length === 0) return null
                 const p = denorm(item.points[0])
+
+                // Engineering Balloon Style
+                // Leader offset (can be dynamic later, fixed for now)
+                const lx = 25
+                const ly = -25
+                const r = 14 // Balloon radius
+
+                // Calculate line end point (at circle boundary)
+                const angle = Math.atan2(ly, lx)
+                const lineEndX = lx - (r * Math.cos(angle))
+                const lineEndY = ly - (r * Math.sin(angle))
+
+                // Balloon Number: Use explicit balloonNo if available, otherwise index + 1
+                const balloonNum = item.balloonNo || (index + 1)
+
+                const isIssue = item.type === 'issue' || item.color === '#ef4444'
+
                 return (
                     <g key={item.id} transform={`translate(${p.x}, ${p.y})`} opacity={opacity} {...commonProps}>
-                        {/* Target Area */}
-                        <circle cx="0" cy="-20" r="25" fill="transparent" />
-                        {/* Stick */}
-                        <line x1="0" y1="0" x2="0" y2="-40" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
-                        {/* Bubble */}
-                        <circle cx="0" cy="-40" r={isSelected ? 18 : 15} fill={isSelected ? '#1e293b' : pinColor} stroke="white" strokeWidth="2" className="transition-all duration-200" />
-                        {/* Index */}
-                        <text x="0" y="-35" textAnchor="middle" fill="white" fontSize={12} fontWeight="bold" className="pointer-events-none">{index + 1}</text>
+                        {/* Hit Area for easier selection */}
+                        <circle cx={lx} cy={ly} r={r + 10} fill="transparent" />
+
                         {/* Anchor Dot */}
-                        <circle cx="0" cy="0" r="3" fill="#10b981" stroke="white" strokeWidth="1" />
+                        <circle cx="0" cy="0" r="2.5" fill={pinColor} />
+
+                        {/* Leader Line */}
+                        <line
+                            x1="0"
+                            y1="0"
+                            x2={lineEndX}
+                            y2={lineEndY}
+                            stroke={pinColor}
+                            strokeWidth="1.5"
+                        />
+
+                        {/* Balloon Circle */}
+                        <circle
+                            cx={lx}
+                            cy={ly}
+                            r={r}
+                            fill={isSelected ? '#1e293b' : 'white'}
+                            stroke={pinColor}
+                            strokeWidth="2"
+                            className="transition-all duration-200 shadow-sm"
+                        />
+
+                        {/* Balloon Number */}
+                        <text
+                            x={lx}
+                            y={ly}
+                            dy="4" // Vertical optical alignment
+                            textAnchor="middle"
+                            fill={isSelected ? 'white' : pinColor}
+                            fontSize={12}
+                            fontWeight="bold"
+                            className="pointer-events-none select-none font-mono"
+                        >
+                            {balloonNum}
+                        </text>
+
+                        {/* Hover/Selection Detail (Optional subtle indicator) */}
+                        {isIssue && (
+                            <circle cx={lx + r - 2} cy={ly - r + 2} r="4" fill="#ef4444" stroke="white" strokeWidth="1" />
+                        )}
                     </g>
                 )
             default: return null

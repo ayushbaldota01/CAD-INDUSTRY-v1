@@ -11,6 +11,7 @@
     "demo": "node scripts/demo-check.js"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.4.2",
     "@supabase/supabase-js": "^2.87.1",
@@ -24,7 +25,8 @@
     "react-dropzone": "^14.3.8",
     "three": "^0.182.0",
     "three-mesh-bvh": "^0.9.4",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
