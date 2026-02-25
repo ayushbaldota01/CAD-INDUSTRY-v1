@@ -29,6 +29,7 @@ export default function SharedViewerClient({
     shareToken
 }: SharedViewerClientProps) {
     const [selectedAnnotation, setSelectedAnnotation] = useState<Annotation | null>(null)
+    const [toast, setToast] = useState<string | null>(null)
     const viewerRef = useRef<CadViewerRef>(null)
 
     // Map annotations to viewer format
@@ -42,11 +43,16 @@ export default function SharedViewerClient({
         type: (ann.type === 'bubble' ? 'note' : 'cloud') as 'note' | 'cloud'
     }))
 
+    const showToast = (msg: string) => {
+        setToast(msg)
+        setTimeout(() => setToast(null), 3500)
+    }
+
     const handleAnnotate = () => {
         if (accessMode === 'read-only') {
-            alert('This is a read-only share link. Annotations are disabled.')
+            showToast('This is a read-only share link. Annotations are disabled.')
         } else {
-            alert('Comment-only mode: Annotation feature coming soon for shared links.')
+            showToast('Comment-only mode: Sign in for full annotation features.')
         }
     }
 
@@ -118,6 +124,13 @@ export default function SharedViewerClient({
                                 ? 'Read-only access. Sign in to comment.'
                                 : 'Comment-only access. Sign in for full features.'}
                         </div>
+                    </div>
+                )}
+
+                {/* Toast notification — replaces alert() calls */}
+                {toast && (
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-600 text-slate-200 text-sm px-5 py-3 rounded-full shadow-2xl z-50 animate-fade-in">
+                        {toast}
                     </div>
                 )}
             </div>

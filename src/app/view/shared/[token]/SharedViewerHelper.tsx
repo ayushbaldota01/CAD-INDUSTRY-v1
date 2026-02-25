@@ -31,7 +31,7 @@ export default function SharedViewerHelper({
     // No creation allowed in shared view for now (read-only mostly)
     const handleAnnotate = () => {
         if (role === 'editor') {
-            alert('Editor mode not fully implemented in shared view yet.')
+            console.warn('Editor mode not yet implemented in shared view.')
         }
     }
 

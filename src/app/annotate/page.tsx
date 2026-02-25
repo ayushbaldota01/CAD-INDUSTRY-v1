@@ -10,16 +10,8 @@ export default function AnnotatePage() {
     const pdfUrl = 'https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/examples/learning/helloworld.pdf'
 
     const handleSave = async (items: OverlayItem[]) => {
-        console.log('Saving overlay:', items)
-
-        // Mock save to DB
-        // In real app:
-        // const { error } = await supabase.from('pdf_overlays').insert({ 
-        //   pdf_key: pdfUrl, 
-        //   overlay_json: items 
-        // })
-
-        alert(`Overlay saved with ${items.length} items! (Check console for JSON)`)
+        console.log('Overlay saved:', items)
+        // In production: await supabase.from('pdf_overlays').upsert({ pdf_key: pdfUrl, overlay_json: items })
     }
 
     return (

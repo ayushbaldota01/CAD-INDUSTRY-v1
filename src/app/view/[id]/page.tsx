@@ -2,8 +2,6 @@
 
 /**
  * View Page - 3D and PDF Viewer
- * 
- * Optimized for performance with the new engine.
  */
 
 import React, { useRef, useState, useEffect, useCallback } from 'react'
@@ -24,6 +22,7 @@ import { supabase } from '@/lib/supabaseClient'
 import ViewerToolbar, { ToolType } from '@/components/ViewerToolbar'
 import { useUserRole } from '@/hooks/useUserRole'
 import { FALLBACK_MODEL_URL } from '@/lib/config'
+import { AlertDialog } from '@/components/ui/Dialogs'
 
 // Dynamically import CadViewer with no SSR
 const CadViewer = dynamic(() => import('@/components/CadViewer'), {
@@ -69,6 +68,8 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
     const [fileMissing, setFileMissing] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
     const [isLoadingRemote, setIsLoadingRemote] = useState(!isLocal)
+    // UI dialogs (replaces alert/confirm)
+    const [alertDialog, setAlertDialog] = useState<{ title: string; message: string; variant: 'info' | 'success' | 'warning' | 'error' } | null>(null)
 
     // Fetch file details and versions if not local
     useEffect(() => {
@@ -161,59 +162,50 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
         text: string
     ) => {
         if (!permissions.canComment) {
-            alert(`You need 'reviewer' or 'admin' role to add annotations. Your role: ${role}`)
+            setAlertDialog({
+                title: 'Permission Required',
+                message: `You need 'reviewer' or 'admin' role to add annotations. Your current role: ${role}.`,
+                variant: 'warning',
+            })
             return
         }
-
         try {
             await createAnnotation(data, text)
             logActivity('annotation_added')
         } catch (e: any) {
             console.error('Annotation failed:', e)
-            alert('Annotation failed: ' + e.message)
+            setAlertDialog({ title: 'Annotation Failed', message: e.message, variant: 'error' })
         }
     }, [permissions.canComment, role, createAnnotation, logActivity])
 
     // Handle snapshot
     const handleSnapshot = useCallback(async () => {
         if (!viewerRef.current) return
-
         try {
             const imageData = viewerRef.current.takeSnapshot()
             const camera = viewerRef.current.exportCamera()
-
-            const projectedAnnotations = annotations.map(ann => {
-                const projection = projectPoint(camera, ann.position)
-                if (projection) {
-                    return { id: ann.id, u: projection.u, v: projection.v }
-                }
-                return null
-            }).filter(Boolean)
-
+            const projectedAnnotations = annotations
+                .map(ann => {
+                    const projection = projectPoint(camera, ann.position)
+                    return projection ? { id: ann.id, u: projection.u, v: projection.v } : null
+                })
+                .filter(Boolean)
             const targetId = id === 'demo' ? 'demo-model-id' : id
-
             const res = await fetch('/api/snapshots', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    modelId: targetId,
-                    imageData,
-                    camera,
-                    annotations: projectedAnnotations
-                })
+                body: JSON.stringify({ modelId: targetId, imageData, camera, annotations: projectedAnnotations }),
             })
-
             const json = await res.json()
-
             if (res.ok) {
                 logActivity('snapshot_created')
-                alert(`Snapshot saved! URL: ${json.url}`)
+                setAlertDialog({ title: 'Snapshot Saved', message: `Snapshot captured successfully.${json.url ? ` URL: ${json.url}` : ''}`, variant: 'success' })
             } else {
                 throw new Error(json.error)
             }
         } catch (err: any) {
             console.error('Snapshot error:', err)
-            alert('Snapshot failed: ' + err.message)
+            setAlertDialog({ title: 'Snapshot Failed', message: err.message, variant: 'error' })
         }
     }, [annotations, id, logActivity])
 
@@ -464,6 +456,17 @@ export default function ViewPage({ params }: { params: Promise<{ id: string }> }
                     fileName={name}
                     onClose={() => setShowExportModal(false)}
                     onExport={(format) => logActivity(`file_exported_${format}`)}
+                />
+            )}
+
+            {/* Alert dialog — replaces all native alert() calls */}
+            {alertDialog && (
+                <AlertDialog
+                    isOpen={!!alertDialog}
+                    onClose={() => setAlertDialog(null)}
+                    title={alertDialog.title}
+                    message={alertDialog.message}
+                    variant={alertDialog.variant}
                 />
             )}
         </div>

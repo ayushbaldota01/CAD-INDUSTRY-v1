@@ -8,6 +8,7 @@ export default function UpdatePasswordPage() {
     const [confirmPassword, setConfirmPassword] = useState('')
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
+    const [success, setSuccess] = useState(false)
     const router = useRouter()
 
     const validatePassword = (pwd: string) => {
@@ -36,17 +37,13 @@ export default function UpdatePasswordPage() {
         }
 
         try {
-            const { error: updateError } = await supabase.auth.updateUser({
-                password
-            })
-
+            const { error: updateError } = await supabase.auth.updateUser({ password })
             if (updateError) {
                 setError(updateError.message)
                 return
             }
-
-            alert('Password updated successfully!')
-            router.push('/login')
+            setSuccess(true)
+            setTimeout(() => router.push('/login'), 2000)
         } catch (err: any) {
             console.error('Update error:', err)
             setError('An unexpected error occurred. Please try again.')
@@ -63,46 +60,54 @@ export default function UpdatePasswordPage() {
                     <p className="text-slate-400 text-sm">Choose a strong password for your account</p>
                 </div>
 
-                <form onSubmit={handleUpdate} className="space-y-5">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-300 mb-2">New Password</label>
-                        <input
-                            type="password"
-                            required
-                            value={password}
-                            onChange={e => setPassword(e.target.value)}
-                            className="w-full bg-slate-900/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
-                            placeholder="••••••••"
-                        />
-                        <p className="text-xs text-slate-500 mt-1">Min 8 characters, 1 uppercase, 1 number</p>
+                {success ? (
+                    <div className="bg-green-500/10 border border-green-500/50 rounded-xl p-6 text-center">
+                        <div className="text-4xl mb-3">✅</div>
+                        <h2 className="text-green-400 font-semibold text-lg">Password Updated!</h2>
+                        <p className="text-slate-400 text-sm mt-1">Redirecting you to login...</p>
                     </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-slate-300 mb-2">Confirm Password</label>
-                        <input
-                            type="password"
-                            required
-                            value={confirmPassword}
-                            onChange={e => setConfirmPassword(e.target.value)}
-                            className="w-full bg-slate-900/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
-                            placeholder="••••••••"
-                        />
-                    </div>
-
-                    {error && (
-                        <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-3">
-                            <p className="text-red-400 text-sm">{error}</p>
+                ) : (
+                    <form onSubmit={handleUpdate} className="space-y-5">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">New Password</label>
+                            <input
+                                type="password"
+                                required
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                className="w-full bg-slate-900/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
+                                placeholder="••••••••"
+                            />
+                            <p className="text-xs text-slate-500 mt-1">Min 8 characters, 1 uppercase, 1 number</p>
                         </div>
-                    )}
 
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed py-3 rounded-lg font-semibold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-indigo-900/50"
-                    >
-                        {loading ? 'Updating...' : 'Update Password'}
-                    </button>
-                </form>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-300 mb-2">Confirm Password</label>
+                            <input
+                                type="password"
+                                required
+                                value={confirmPassword}
+                                onChange={e => setConfirmPassword(e.target.value)}
+                                className="w-full bg-slate-900/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
+                                placeholder="••••••••"
+                            />
+                        </div>
+
+                        {error && (
+                            <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-3">
+                                <p className="text-red-400 text-sm">{error}</p>
+                            </div>
+                        )}
+
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 disabled:cursor-not-allowed py-3 rounded-lg font-semibold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-indigo-900/50"
+                        >
+                            {loading ? 'Updating...' : 'Update Password'}
+                        </button>
+                    </form>
+                )}
             </div>
         </div>
     )

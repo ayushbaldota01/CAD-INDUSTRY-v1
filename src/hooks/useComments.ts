@@ -90,8 +90,7 @@ export const useComments = (annotationId: string | null) => {
         if (!annotationId) return
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) {
-            alert('Please login')
-            return
+            throw new Error('You must be logged in to comment.')
         }
 
         const { error } = await supabase.from('comments').insert({

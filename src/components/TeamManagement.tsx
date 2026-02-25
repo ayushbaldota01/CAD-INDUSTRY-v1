@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useProjectMembers } from '@/hooks/useProjectMembers'
+import { ConfirmDialog, AlertDialog } from '@/components/ui/Dialogs'
 
 type TeamManagementProps = {
     projectId: string
@@ -14,6 +15,8 @@ export default function TeamManagement({ projectId, userRole }: TeamManagementPr
     const [inviteRole, setInviteRole] = useState<'admin' | 'member' | 'viewer'>('member')
     const [inviting, setInviting] = useState(false)
     const [error, setError] = useState('')
+    const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
+    const [alertMsg, setAlertMsg] = useState<{ title: string; message: string } | null>(null)
 
     const isAdmin = userRole === 'owner' || userRole === 'admin'
 
@@ -38,17 +41,22 @@ export default function TeamManagement({ projectId, userRole }: TeamManagementPr
         try {
             await updateMemberRole(userId, newRole)
         } catch (err) {
-            alert('Failed to update role')
+            setAlertMsg({ title: 'Role Update Failed', message: 'Failed to update role. Please try again.' })
         }
     }
 
-    const handleRemove = async (userId: string) => {
-        if (!confirm('Remove this member from the project?')) return
+    const handleRemove = (userId: string) => {
+        setConfirmRemove(userId)
+    }
 
+    const confirmDoRemove = async () => {
+        if (!confirmRemove) return
         try {
-            await removeMember(userId)
+            await removeMember(confirmRemove)
         } catch (err) {
-            alert('Failed to remove member')
+            setAlertMsg({ title: 'Remove Failed', message: 'Failed to remove this member. Please try again.' })
+        } finally {
+            setConfirmRemove(null)
         }
     }
 
@@ -149,9 +157,9 @@ export default function TeamManagement({ projectId, userRole }: TeamManagementPr
                                     onChange={e => setInviteRole(e.target.value as any)}
                                     className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500 outline-none"
                                 >
-                                    <option value="viewer">Viewer - Can view files</option>
-                                    <option value="member">Member - Can view and comment</option>
-                                    <option value="admin">Admin - Full access</option>
+                                    <option value="viewer">Viewer — can view files</option>
+                                    <option value="member">Member — can view and comment</option>
+                                    <option value="admin">Admin — full access</option>
                                 </select>
                             </div>
 
@@ -164,10 +172,7 @@ export default function TeamManagement({ projectId, userRole }: TeamManagementPr
                             <div className="flex gap-3 pt-4">
                                 <button
                                     type="button"
-                                    onClick={() => {
-                                        setShowInviteModal(false)
-                                        setError('')
-                                    }}
+                                    onClick={() => { setShowInviteModal(false); setError('') }}
                                     className="flex-1 bg-slate-700 hover:bg-slate-600 py-3 rounded-lg font-semibold transition"
                                 >
                                     Cancel
@@ -183,6 +188,28 @@ export default function TeamManagement({ projectId, userRole }: TeamManagementPr
                         </form>
                     </div>
                 </div>
+            )}
+
+            {/* Confirm remove dialog */}
+            <ConfirmDialog
+                isOpen={!!confirmRemove}
+                onClose={() => setConfirmRemove(null)}
+                onConfirm={confirmDoRemove}
+                title="Remove Member"
+                message="Are you sure you want to remove this member from the project? They will lose all access immediately."
+                confirmLabel="Remove"
+                variant="danger"
+            />
+
+            {/* Alert dialog */}
+            {alertMsg && (
+                <AlertDialog
+                    isOpen={true}
+                    onClose={() => setAlertMsg(null)}
+                    title={alertMsg.title}
+                    message={alertMsg.message}
+                    variant="error"
+                />
             )}
         </div>
     )

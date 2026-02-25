@@ -343,25 +343,12 @@ const ViewerScene = memo(function ViewerScene({
             }
         },
         takeSnapshot: () => {
-            const canvas = gl.domElement
-            const maxPixels = 16_000_000 // ~4K resolution limit
-            const currentPixels = canvas.width * canvas.height
-
-            // ========== SECURITY: Guard against excessively large canvases ==========
-            if (currentPixels > maxPixels) {
-                console.warn(`Snapshot: Canvas size (${canvas.width}x${canvas.height}) exceeds limit. Consider reducing resolution.`)
-                // Still allow the snapshot, but log a warning
-                // In a stricter implementation, you could scale down or block
-            }
-            // =========================================================================
-
             gl.render(scene, camera)
-
             try {
-                return canvas.toDataURL('image/png')
+                return gl.domElement.toDataURL('image/png')
             } catch (e) {
                 console.error('Snapshot failed:', e)
-                return '' // Return empty string on failure instead of throwing
+                return ''
             }
         },
         resetView: () => {
@@ -371,6 +358,39 @@ const ViewerScene = memo(function ViewerScene({
             invalidate()
         },
         fitToModel: () => {
+            // Compute the real scene bounding box and frame it
+            const box = new THREE.Box3()
+            scene.traverse(obj => {
+                if ((obj as THREE.Mesh).isMesh) {
+                    const mesh = obj as THREE.Mesh
+                    if (mesh.geometry) {
+                        mesh.geometry.computeBoundingBox()
+                        const geomBox = mesh.geometry.boundingBox!
+                        geomBox.applyMatrix4(mesh.matrixWorld)
+                        box.union(geomBox)
+                    }
+                }
+            })
+
+            if (box.isEmpty()) {
+                // Fallback: reset to default view if scene is empty
+                camera.position.set(...ENGINE_CONFIG.camera.position)
+                controlsRef.current?.target.set(0, 0, 0)
+            } else {
+                const center = new THREE.Vector3()
+                const size = new THREE.Vector3()
+                box.getCenter(center)
+                box.getSize(size)
+
+                const maxDim = Math.max(size.x, size.y, size.z)
+                const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180)
+                const dist = (maxDim / (2 * Math.tan(fov / 2))) * 1.5 // 1.5x padding
+
+                const direction = camera.position.clone().sub(center).normalize()
+                camera.position.copy(center.clone().add(direction.multiplyScalar(dist)))
+                controlsRef.current?.target.copy(center)
+            }
+
             controlsRef.current?.update()
             invalidate()
         },
@@ -435,14 +455,24 @@ const ViewerScene = memo(function ViewerScene({
             {/* Clipping Planes */}
             <ClippingPlanes enabled={showClipping || false} />
 
-            {/* Controls */}
+            {/* Controls — properly wired to activeTool */}
             <OrbitControls
                 ref={controlsRef}
                 makeDefault
-                enabled={!annotationPos}
-                enablePan={true}
-                enableRotate={true}
-                enableZoom={true}
+                enabled={!annotationPos && activeTool !== 'measure' && activeTool !== 'comment' && activeTool !== 'cloud'}
+                enablePan={activeTool === 'pan' || activeTool === 'select'}
+                enableRotate={activeTool === 'select'}
+                enableZoom={activeTool === 'zoom' || activeTool === 'select'}
+                mouseButtons={{
+                    LEFT:
+                        activeTool === 'pan'
+                            ? THREE.MOUSE.PAN
+                            : activeTool === 'zoom'
+                                ? THREE.MOUSE.DOLLY
+                                : THREE.MOUSE.ROTATE,
+                    MIDDLE: THREE.MOUSE.DOLLY,
+                    RIGHT: THREE.MOUSE.PAN,
+                }}
                 enableDamping={ENGINE_CONFIG.controls.enableDamping}
                 dampingFactor={ENGINE_CONFIG.controls.dampingFactor}
                 rotateSpeed={ENGINE_CONFIG.controls.rotateSpeed}
@@ -450,7 +480,7 @@ const ViewerScene = memo(function ViewerScene({
                 panSpeed={ENGINE_CONFIG.controls.panSpeed}
                 minDistance={ENGINE_CONFIG.controls.minDistance}
                 maxDistance={ENGINE_CONFIG.controls.maxDistance}
-                maxPolarAngle={Math.PI} // Allow full vertical rotation
+                maxPolarAngle={Math.PI}
                 minPolarAngle={0}
             />
         </>

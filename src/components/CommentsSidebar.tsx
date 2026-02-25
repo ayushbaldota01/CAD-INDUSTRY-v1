@@ -13,16 +13,18 @@ export default function CommentsSidebar({ selectedAnnotation, onClose }: Props) 
     const { comments, loading, addComment } = useComments(selectedAnnotation?.id || null)
     const [text, setText] = useState('')
     const [sending, setSending] = useState(false)
+    const [error, setError] = useState<string | null>(null)
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         if (!text.trim()) return
         setSending(true)
+        setError(null)
         try {
             await addComment(text)
             setText('')
         } catch (err: any) {
-            alert(err.message)
+            setError(err.message || 'Failed to send comment')
         } finally {
             setSending(false)
         }
@@ -68,6 +70,9 @@ export default function CommentsSidebar({ selectedAnnotation, onClose }: Props) 
             </div>
 
             <div className="p-4 bg-slate-950 border-t border-slate-800">
+                {error && (
+                    <p className="text-xs text-red-400 mb-2 px-1">{error}</p>
+                )}
                 <form onSubmit={handleSubmit} className="flex gap-2">
                     <input
                         className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"

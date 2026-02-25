@@ -71,6 +71,46 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     const [isCalibrating, setIsCalibrating] = useState(false)
     const [measurementUnit, setMeasurementUnit] = useState<'mm' | 'cm' | 'in' | 'ft'>('mm')
     const [loadingProgress, setLoadingProgress] = useState(0)
+    const [toast, setToast] = useState<string | null>(null)
+
+    // Inline balloon input dialog (replaces native prompt)
+    const [pendingBalloon, setPendingBalloon] = useState<{
+        coords: { x: number; y: number }
+        type: 'comment' | 'issue'
+        text: string
+        screenX: number  // pixel position on screen for floating panel
+        screenY: number
+    } | null>(null)
+    const balloonInputRef = useRef<HTMLTextAreaElement>(null)
+
+    const showToast = useCallback((msg: string) => {
+        setToast(msg)
+        setTimeout(() => setToast(null), 3000)
+    }, [])
+
+    /** Called when the user confirms the inline balloon text input */
+    const confirmBalloon = useCallback(async () => {
+        if (!pendingBalloon) return
+        const { coords, type, text } = pendingBalloon
+        if (!text.trim()) {
+            setPendingBalloon(null)
+            return
+        }
+        const newItem: OverlayItem = {
+            id: uuidv4(),
+            type,
+            points: [coords],
+            page: pageNumber,
+            text: text.trim(),
+            color: type === 'issue' ? '#ef4444' : '#3b82f6'
+        }
+        setPendingBalloon(null)
+        setTool('none')
+        const saved = await onSaveAnnotation?.(newItem) as OverlayItem | undefined
+        if (saved) {
+            setHistory(prev => [...prev, { type: 'add', item: saved }])
+        }
+    }, [pendingBalloon, pageNumber, onSaveAnnotation])
 
     // Load PDF with optimized settings
     useEffect(() => {
@@ -300,30 +340,13 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
         const coords = getNormCoords(e)
 
         if (tool === 'comment' || tool === 'issue') {
-            const text = prompt(`Enter ${tool === 'issue' ? 'Issue' : 'Comment'} text:`)
-            if (!text) {
-                setTool('none')
-                return
-            }
-
-            const isIssue = tool === 'issue'
-            const newItem: OverlayItem = {
-                id: uuidv4(),
-                type: isIssue ? 'issue' : 'comment',
-                points: [coords],
-                page: pageNumber,
-                text: text,
-                color: isIssue ? '#ef4444' : '#3b82f6'
-            }
-
-                ; (async () => {
-                    const saved = await onSaveAnnotation?.(newItem) as OverlayItem | undefined
-                    if (saved) {
-                        setHistory(prev => [...prev, { type: 'add', item: saved }])
-                    }
-                })()
-
-            setTool('none')
+            // Get screen position for the floating input panel
+            const rect = containerRef.current?.getBoundingClientRect()
+            const screenX = rect ? (e.clientX - rect.left) : e.clientX
+            const screenY = rect ? (e.clientY - rect.top) : e.clientY
+            setPendingBalloon({ coords, type: tool, text: '', screenX, screenY })
+            // Focus input after next render
+            setTimeout(() => balloonInputRef.current?.focus(), 50)
             return
         }
 
@@ -352,7 +375,7 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                     setIsCalibrating(false)
                 } else if (tool === 'dimension') {
                     if (!calibrationScale) {
-                        alert('Please calibrate first!')
+                        showToast('Please calibrate first! Use the Calibrate tool to set a known distance.')
                         setCurrentPath([])
                         return
                     }
@@ -950,9 +973,80 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                     <ToolBtn onClick={handleRedo} disabled={redoStack.length === 0} icon={<RedoIcon />} title="Redo" />
                 </div>
             </div>
+
+            {/* ── Inline Balloon Input Panel (replaces native prompt()) ── */}
+            {pendingBalloon && (
+                <div
+                    className="absolute z-50"
+                    style={{
+                        left: Math.min(pendingBalloon.screenX + 12, (containerRef.current?.clientWidth ?? 800) - 280),
+                        top: Math.min(pendingBalloon.screenY + 12, (containerRef.current?.clientHeight ?? 600) - 180),
+                        width: 268
+                    }}
+                >
+                    <div className={`rounded-xl shadow-2xl border overflow-hidden ${pendingBalloon.type === 'issue'
+                            ? 'bg-slate-900 border-red-500/60'
+                            : 'bg-slate-900 border-blue-500/60'
+                        }`}>
+                        {/* Panel header */}
+                        <div className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold ${pendingBalloon.type === 'issue' ? 'bg-red-900/30 text-red-400' : 'bg-blue-900/30 text-blue-400'
+                            }`}>
+                            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold ${pendingBalloon.type === 'issue' ? 'bg-red-500' : 'bg-blue-500'
+                                }`}>
+                                {pendingBalloon.type === 'issue' ? '!' : '✎'}
+                            </span>
+                            {pendingBalloon.type === 'issue' ? 'Add Critical Issue' : 'Add Comment'}
+                        </div>
+
+                        {/* Text input */}
+                        <div className="p-3">
+                            <textarea
+                                ref={balloonInputRef}
+                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 resize-none h-20"
+                                placeholder={pendingBalloon.type === 'issue' ? 'Describe the issue…' : 'Enter your comment…'}
+                                value={pendingBalloon.text}
+                                onChange={e => setPendingBalloon(prev => prev ? { ...prev, text: e.target.value } : null)}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); confirmBalloon() }
+                                    if (e.key === 'Escape') { setPendingBalloon(null); setTool('none') }
+                                }}
+                            />
+                            <p className="text-[10px] text-slate-600 mt-1">Enter to save · Shift+Enter for newline · Esc to cancel</p>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex gap-2 px-3 pb-3">
+                            <button
+                                onClick={() => { setPendingBalloon(null); setTool('none') }}
+                                className="flex-1 py-1.5 text-xs text-slate-400 bg-slate-800 hover:bg-slate-700 rounded-lg transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmBalloon}
+                                disabled={!pendingBalloon.text.trim()}
+                                className={`flex-1 py-1.5 text-xs font-semibold text-white rounded-lg transition disabled:opacity-40 ${pendingBalloon.type === 'issue'
+                                        ? 'bg-red-600 hover:bg-red-500'
+                                        : 'bg-blue-600 hover:bg-blue-500'
+                                    }`}
+                            >
+                                Place Balloon
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Toast notification */}
+            {toast && (
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-600 text-slate-200 text-sm px-5 py-3 rounded-full shadow-2xl z-50 pointer-events-none">
+                    {toast}
+                </div>
+            )}
         </div>
     )
 }
+
 
 const ToolBtn = ({ active, onClick, icon, disabled, title, color }: any) => (
     <button onClick={onClick} disabled={disabled} title={title} className={`p-2.5 rounded-xl transition-all duration-200 active:scale-95 flex items-center justify-center ${active ? 'bg-slate-800 text-white shadow-inner ring-1 ring-white/10' : 'text-slate-400 hover:text-white hover:bg-slate-800/50'} ${disabled ? 'opacity-30 cursor-not-allowed' : ''} ${active && color ? color : ''}`}>

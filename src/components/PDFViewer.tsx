@@ -1,4 +1,3 @@
-
 'use client'
 
 import React, { useMemo, useState } from 'react'
@@ -6,6 +5,7 @@ import PdfAnnotator, { OverlayItem } from './PdfAnnotator'
 import BalloonList from './BalloonList'
 import { useAnnotations } from '@/hooks/useAnnotations'
 import { extractTextFromPDF, analyzeTextItems } from '@/lib/autoBalloon'
+import { AlertDialog } from '@/components/ui/Dialogs'
 import * as XLSX from 'xlsx'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -32,6 +32,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
     const [selectedId, setSelectedId] = useState<string | null>(null)
     const [showSidebar, setShowSidebar] = useState(true)
     const [isAutoBallooning, setIsAutoBallooning] = useState(false)
+    const [alertDialog, setAlertDialog] = useState<{ title: string; message: string; variant: 'info' | 'success' | 'warning' | 'error' } | null>(null)
 
     // Map DB annotations to OverlayItems
     const overlayItems = useMemo<OverlayItem[]>(() => {
@@ -74,17 +75,37 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
         }).filter(Boolean) as OverlayItem[]
     }, [annotations])
 
+    const BALLOON_TYPES = ['comment', 'issue', 'callout'] as const
+    type BalloonType = typeof BALLOON_TYPES[number]
+
+    const isBalloonType = (type: string): type is BalloonType =>
+        (BALLOON_TYPES as readonly string[]).includes(type)
+
+    /** Derive entity label from colour — blue→Comment, red/issue→Critical */
+    const colorToEntityType = (color: string | undefined, type: string): string => {
+        const c = (color || '').toLowerCase()
+        if (type === 'issue') return 'Critical'
+        if (c.includes('#ef') || c.includes('#f87') || c === 'red' || c.includes('#dc') || c.includes('#b91')) return 'Critical'
+        if (c.includes('#3b8') || c.includes('#60a') || c.includes('#2563') || c === 'blue' || c.includes('#0ea')) return 'Comment'
+        return 'Note'
+    }
+
     const handleSaveOverlay = async (item: OverlayItem): Promise<OverlayItem | null> => {
         if (!item.points.length) return null
 
         const page = item.page || 1
+        const isBalloon = isBalloonType(item.type)
 
-        // Auto-assign balloon number if new and missing
+        // Only balloon types get an auto-incremented number
         let balloonNo = item.balloonNo
-        if (!balloonNo) {
-            const maxNo = overlayItems.reduce((max, i) => Math.max(max, i.balloonNo || 0), 0)
+        if (isBalloon && !balloonNo) {
+            const maxNo = overlayItems
+                .filter(i => isBalloonType(i.type))
+                .reduce((max, i) => Math.max(max, i.balloonNo || 0), 0)
             balloonNo = maxNo + 1
         }
+
+        const entityType = item.entityType || colorToEntityType(item.color, item.type)
 
         // Store full metadata in the position JSONB
         const posPayload = {
@@ -92,25 +113,26 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
             type: item.type,
             points: item.points,
             color: item.color,
-            text: item.text, // Backup text in position
-            // New Fields
-            balloonNo,
-            entityType: item.entityType || 'Note',
-            description: item.description || '',
-            remarks: item.remarks || '',
-            drawingReference: item.drawingReference || ''
+            text: item.text,
+            // Balloon-only fields — undefined for non-balloon types
+            ...(isBalloon ? {
+                balloonNo,
+                entityType,
+                description: item.description || '',
+                remarks: item.remarks || '',
+                drawingReference: item.drawingReference || ''
+            } : {})
         }
 
         try {
             const newAnn = await createAnnotation({
                 position: posPayload,
-                normal: [0, 0, 0] // dummy
+                normal: [0, 0, 0]
             } as any, item.text || '')
 
             if (newAnn) {
-                return { ...item, id: newAnn.id, balloonNo }
+                return { ...item, id: newAnn.id, balloonNo, entityType: entityType as any }
             }
-
         } catch (e) {
             console.error('Failed to save PDF annotation', e)
         }
@@ -138,7 +160,8 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
         }
 
         await updateAnnotation(id, {
-            position: posPayload,
+            // posPayload is a JSONB object stored as position — cast to bypass tuple type
+            position: posPayload as any,
             text: merged.text
         })
     }
@@ -181,14 +204,14 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
             }
 
             if (count > 0) {
-                alert(`Auto-ballooning complete! Created ${count} balloons.`)
+                setAlertDialog({ title: 'Auto-Balloon Complete', message: `Created ${count} balloons from detected engineering entities.`, variant: 'success' })
             } else {
-                alert('No new engineering entities found to balloon.')
+                setAlertDialog({ title: 'No Entities Found', message: 'No new engineering entities were found to balloon in this drawing.', variant: 'info' })
             }
 
         } catch (e) {
             console.error("Auto balloon error:", e)
-            alert("Failed to run auto-ballooning.")
+            setAlertDialog({ title: 'Auto-Balloon Failed', message: 'An error occurred while analyzing the drawing. Please try again.', variant: 'error' })
         } finally {
             setIsAutoBallooning(false)
         }
@@ -199,7 +222,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
     // ===========================================
     const handleExport = () => {
         if (overlayItems.length === 0) {
-            alert("No balloons to export.")
+            setAlertDialog({ title: 'Nothing to Export', message: 'Add some balloon annotations before exporting.', variant: 'warning' })
             return
         }
 
@@ -247,18 +270,14 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                     onClick={() => setShowSidebar(prev => !prev)}
                     className="absolute top-4 right-4 z-10 bg-slate-800 p-2 rounded-lg shadow-xl border border-slate-700 hover:bg-slate-700 transition"
                 >
-                    {showSidebar ? (
-                        <ChevronRightIcon />
-                    ) : (
-                        <ChevronLeftIcon />
-                    )}
+                    {showSidebar ? <ChevronRightIcon /> : <ChevronLeftIcon />}
                 </button>
 
-                {/* Loading Indicator */}
+                {/* Auto-Balloon Loading Overlay */}
                 {isAutoBallooning && (
                     <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50">
                         <div className="bg-white p-6 rounded-xl shadow-2xl flex flex-col items-center">
-                            <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                            <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4" />
                             <div className="text-lg font-bold text-slate-800">Analyzing Drawing...</div>
                             <p className="text-slate-500 text-sm">Extracting text and identifying dimensions</p>
                         </div>
@@ -280,6 +299,18 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                     />
                 </div>
             </div>
+
+            {/* Alert Dialog — replaces all native alert() calls */}
+            {alertDialog && (
+                <AlertDialog
+                    isOpen={true}
+                    onClose={() => setAlertDialog(null)}
+                    title={alertDialog.title}
+                    message={alertDialog.message}
+                    variant={alertDialog.variant}
+                />
+            )}
         </div>
     )
 }
+

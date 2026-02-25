@@ -1,249 +1,234 @@
 'use client'
 
-/**
- * Dashboard Page - Optimized
- * 
- * Main landing page with improved performance and offline support.
- */
-
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { supabase, isOfflineMode, checkSupabaseConnection } from '@/lib/supabaseClient'
+import { getFileDisplayType, type FileRecord } from '@/types'
+import Badge from '@/components/ui/Badge'
+import { EmptyState, Spinner } from '@/components/ui/Feedback'
+import Button from '@/components/ui/Button'
 
-type FileRecord = {
-  id: string
-  name: string
-  file_type: string
-  created_at: string
+type Stats = { total: number; models: number; docs: number }
+
+function FileCard({ file }: { file: FileRecord }) {
+  const displayType = getFileDisplayType(file)
+  const is3D = displayType === '3D'
+
+  return (
+    <Link
+      href={`/view/${file.id}?name=${encodeURIComponent(file.name)}&type=${displayType}`}
+      className="card card-interactive group p-4 flex flex-col gap-3 rounded-xl hover-lift animate-fade-up"
+    >
+      {/* Icon + Type */}
+      <div className="flex items-start justify-between">
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl ${is3D ? 'bg-indigo-500/10' : 'bg-red-500/10'
+          }`}>
+          {is3D ? '🔷' : '📄'}
+        </div>
+        <Badge variant={is3D ? 'indigo' : 'red'}>
+          {is3D ? '3D' : 'PDF'}
+        </Badge>
+      </div>
+
+      {/* Name */}
+      <div>
+        <h3 className="font-medium text-white text-sm leading-tight group-hover:text-indigo-300 transition truncate">
+          {file.name}
+        </h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          {new Date(file.created_at).toLocaleDateString('en-US', {
+            month: 'short', day: 'numeric', year: 'numeric'
+          })}
+        </p>
+      </div>
+    </Link>
+  )
 }
 
-export default function Home() {
+function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div className="card rounded-xl p-5">
+      <p className={`text-3xl font-bold tabular-nums ${color}`}>{value}</p>
+      <p className="text-xs text-slate-500 mt-1 font-medium uppercase tracking-wide">{label}</p>
+    </div>
+  )
+}
+
+export default function DashboardPage() {
   const [files, setFiles] = useState<FileRecord[]>([])
+  const [stats, setStats] = useState<Stats>({ total: 0, models: 0, docs: 0 })
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState<any>(null)
-  const [connectionStatus, setConnectionStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [status, setStatus] = useState<'checking' | 'online' | 'offline'>('checking')
 
-  // Check connection and auth on mount
+  // Auth listener
   useEffect(() => {
-    const init = async () => {
-      // Check if we're online
-      if (isOfflineMode) {
-        setConnectionStatus('offline')
-      } else {
-        const isOnline = await checkSupabaseConnection()
-        setConnectionStatus(isOnline ? 'online' : 'offline')
-      }
-
-      // Get session
-      const { data: { session } } = await supabase.auth.getSession()
-      setSession(session)
-      setLoading(false)
-    }
-
-    init()
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-    })
-
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
     return () => subscription.unsubscribe()
   }, [])
 
-  // Fetch files when session is available
+  // Connection check
+  useEffect(() => {
+    if (isOfflineMode) { setStatus('offline'); return }
+    checkSupabaseConnection().then(online => setStatus(online ? 'online' : 'offline'))
+  }, [])
+
+  // Fetch files
   const fetchFiles = useCallback(async () => {
-    if (!session || connectionStatus === 'offline') {
-      setFiles([])
-      return
-    }
-
+    if (!session) return
     setLoading(true)
-
     try {
       const { data, error } = await supabase
         .from('files')
-        .select('id, name, file_type, created_at')
+        .select('id, name, type, storage_path, project_id, created_by, created_at')
         .order('created_at', { ascending: false })
-        .limit(20)
+        .limit(24)
 
-      if (!error && data) {
-        setFiles(data)
+      if (error) throw error
+
+      if (data) {
+        // Map DB type to our type if needed, but now they match
+        const records = data as unknown as FileRecord[]
+        setFiles(records)
+        setStats({
+          total: records.length,
+          models: records.filter(f => getFileDisplayType(f) === '3D').length,
+          docs: records.filter(f => getFileDisplayType(f) === 'PDF').length,
+        })
       }
     } catch (e) {
       console.warn('Failed to fetch files:', e)
+    } finally {
+      setLoading(false)
     }
-
-    setLoading(false)
-  }, [session, connectionStatus])
+  }, [session])
 
   useEffect(() => {
-    if (session && connectionStatus === 'online') {
-      fetchFiles()
-    }
-  }, [session, connectionStatus, fetchFiles])
+    if (session) fetchFiles()
+  }, [session, fetchFiles])
 
   return (
-    <main className="min-h-screen bg-slate-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        {/* Header */}
-        <header className="flex justify-between items-center mb-10">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">CAD Review Dashboard</h1>
-            <p className="text-slate-500 mt-1">Manage 3D models and specifications</p>
-          </div>
+    <div className="min-h-screen" style={{ paddingLeft: '14rem' }}>
+      <div className="max-w-6xl mx-auto px-8 py-10">
 
-          <div className="flex gap-4 items-center">
-            {/* Connection Status */}
-            {connectionStatus === 'offline' && (
-              <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
-                <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+        {/* Header */}
+        <header className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-white tracking-tight">Dashboard</h1>
+            <p className="text-sm text-slate-500 mt-0.5">Your recent CAD files and models</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {status === 'offline' && (
+              <div className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-500/8 border border-amber-500/15 px-3 py-1.5 rounded-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                 Local Mode
               </div>
             )}
-
-            {session ? (
-              <div className="text-sm text-slate-600">
-                <span className="font-semibold">{session.user.email}</span>
-              </div>
-            ) : (
-              <Link href="/login" className="text-indigo-600 font-medium hover:underline">
-                Log In
-              </Link>
+            {session && !loading && (
+              <button
+                onClick={fetchFiles}
+                className="text-xs text-slate-500 hover:text-slate-300 transition"
+              >
+                ↺ Refresh
+              </button>
             )}
-
-            <Link
-              href="/upload"
-              className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition shadow-sm flex items-center gap-2"
-            >
-              <span>+</span> Upload Asset
+            <Link href="/upload">
+              <Button variant="primary" size="sm">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Upload File
+              </Button>
             </Link>
           </div>
         </header>
 
-        {/* Quick Stats */}
-        {session && connectionStatus === 'online' && files.length > 0 && (
-          <div className="grid grid-cols-3 gap-6 mb-8">
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="text-3xl font-bold text-indigo-600">{files.length}</div>
-              <div className="text-sm text-slate-500 mt-1">Recent Files</div>
-            </div>
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="text-3xl font-bold text-emerald-600">
-                {files.filter(f => ['glb', 'gltf', 'stl', 'obj'].includes(f.file_type)).length}
-              </div>
-              <div className="text-sm text-slate-500 mt-1">3D Models</div>
-            </div>
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="text-3xl font-bold text-rose-600">
-                {files.filter(f => f.file_type === 'pdf').length}
-              </div>
-              <div className="text-sm text-slate-500 mt-1">Documents</div>
-            </div>
+        {/* Stats — only when we have data */}
+        {files.length > 0 && (
+          <div className="grid grid-cols-3 gap-4 mb-8">
+            <StatCard label="Total Files" value={stats.total} color="text-white" />
+            <StatCard label="3D Models" value={stats.models} color="text-indigo-400" />
+            <StatCard label="Documents" value={stats.docs} color="text-red-400" />
           </div>
         )}
 
-        {/* Files Section */}
-        <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-            <h2 className="font-semibold text-slate-800">Recent Files</h2>
-            {session && connectionStatus === 'online' && (
-              <button
-                onClick={fetchFiles}
-                className="text-sm text-indigo-600 font-medium hover:underline"
-              >
-                Refresh
-              </button>
+        {/* Files Grid */}
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Recent Files</h2>
+            {files.length > 0 && (
+              <Link href="/projects" className="text-xs text-indigo-400 hover:text-indigo-300 transition">
+                View all projects →
+              </Link>
             )}
           </div>
 
-          <div className="divide-y divide-slate-100">
-            {loading && (
-              <div className="p-8 text-center text-slate-400">
-                <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                Loading...
-              </div>
-            )}
+          {/* Loading */}
+          {loading && (
+            <div className="flex items-center justify-center py-20">
+              <Spinner size="lg" className="text-indigo-500" />
+            </div>
+          )}
 
-            {!loading && !session && (
-              <div className="p-12 text-center">
-                <div className="text-5xl mb-4">🔐</div>
-                <h3 className="text-lg font-semibold text-slate-700 mb-2">Sign in to view your files</h3>
-                <p className="text-slate-500 mb-6 max-w-md mx-auto">
-                  Access your CAD models, collaborate with your team, and manage projects.
-                </p>
-                <Link
-                  href="/login"
-                  className="inline-block px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition"
-                >
-                  Sign In
-                </Link>
-              </div>
-            )}
+          {/* Not signed in */}
+          {!loading && !session && (
+            <div className="card rounded-2xl">
+              <EmptyState
+                icon="🔐"
+                title="Sign in to view your files"
+                description="Access your CAD models, collaborate with your team, and manage design reviews."
+                action={
+                  <Link href="/login">
+                    <Button variant="primary">Sign In</Button>
+                  </Link>
+                }
+              />
+            </div>
+          )}
 
-            {!loading && session && connectionStatus === 'offline' && (
-              <div className="p-12 text-center">
-                <div className="text-5xl mb-4">📴</div>
-                <h3 className="text-lg font-semibold text-slate-700 mb-2">Offline Mode</h3>
-                <p className="text-slate-500 mb-6 max-w-md mx-auto">
-                  You can still upload and view files locally. They will sync when connection is restored.
-                </p>
-                <Link
-                  href="/upload"
-                  className="inline-block px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition"
-                >
-                  Upload Local File
-                </Link>
-              </div>
-            )}
+          {/* Offline */}
+          {!loading && session && status === 'offline' && (
+            <div className="card rounded-2xl">
+              <EmptyState
+                icon="📴"
+                title="You're offline"
+                description="Reconnect to sync your files. You can still upload and view local files."
+                action={
+                  <Link href="/upload">
+                    <Button variant="primary">Upload Local File</Button>
+                  </Link>
+                }
+              />
+            </div>
+          )}
 
-            {!loading && session && connectionStatus === 'online' && files.length === 0 && (
-              <div className="p-12 text-center">
-                <div className="text-5xl mb-4">📁</div>
-                <p className="text-slate-500 mb-4">No files yet.</p>
-                <Link href="/upload" className="text-indigo-600 hover:underline">
-                  Upload your first model
-                </Link>
-              </div>
-            )}
+          {/* No files */}
+          {!loading && session && files.length === 0 && (
+            <div className="card rounded-2xl">
+              <EmptyState
+                icon="📁"
+                title="No files yet"
+                description="Upload your first 3D model or PDF drawing to get started."
+                action={
+                  <Link href="/upload">
+                    <Button variant="primary">Upload Your First File</Button>
+                  </Link>
+                }
+              />
+            </div>
+          )}
 
-            {!loading && files.map((file) => (
-              <div
-                key={file.id}
-                className="group flex items-center justify-between p-4 hover:bg-slate-50 transition"
-              >
-                <div className="flex items-center gap-4">
-                  <div className={`
-                                        w-12 h-12 rounded-lg flex items-center justify-center text-xl shadow-sm
-                                        ${['glb', 'gltf', 'stl', 'obj'].includes(file.file_type)
-                      ? 'bg-indigo-50 text-indigo-600'
-                      : 'bg-red-50 text-red-600'
-                    }
-                                    `}>
-                    {['glb', 'gltf', 'stl', 'obj'].includes(file.file_type) ? '🎲' : '📄'}
-                  </div>
-                  <div>
-                    <h3 className="font-medium text-slate-900 group-hover:text-indigo-600 transition">
-                      {file.name}
-                    </h3>
-                    <div className="flex gap-3 text-xs text-slate-500 mt-0.5">
-                      <span>{new Date(file.created_at).toLocaleString()}</span>
-                      <span>•</span>
-                      <span className="uppercase">{file.file_type}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <Link
-                  href={`/view/${file.id}?name=${encodeURIComponent(file.name)}&type=${file.file_type === 'pdf' ? 'PDF' : '3D'}`}
-                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 hover:border-slate-400 transition shadow-sm"
-                >
-                  Review
-                </Link>
-              </div>
-            ))}
-          </div>
+          {/* Files grid */}
+          {!loading && files.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+              {files.map(file => (
+                <FileCard key={file.id} file={file} />
+              ))}
+            </div>
+          )}
         </section>
       </div>
-    </main>
+    </div>
   )
 }
