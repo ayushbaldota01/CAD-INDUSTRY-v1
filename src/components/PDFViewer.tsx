@@ -209,14 +209,17 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                 })
             }
         } catch (e) {
-            console.error('Auto balloon error:', e)
             if (e instanceof ScannedPDFError) {
+                // Expected condition — scanned drawing, not a vector PDF.
+                // Do NOT console.error: Next.js 16 dev overlay intercepts it.
                 setAlertDialog({
                     title: 'Scanned Drawing Detected',
                     message: e.message,
                     variant: 'warning',
                 })
             } else {
+                // Truly unexpected error — safe to log
+                console.error('Auto balloon error:', e)
                 setAlertDialog({
                     title: 'Auto-Balloon Failed',
                     message: 'An error occurred while analyzing the drawing. Please try again.',
