@@ -121,10 +121,23 @@ export type PDFOverlayType =
     | 'comment'
     | 'issue'
 
+export type PDFOverlayEntityType =
+    | 'Dimension'
+    | 'Tolerance'
+    | 'GD&T'
+    | 'Surface Finish'
+    | 'Note'
+    | 'Specification'
+    | 'Thread'
+    | 'Weld'
+    | 'Material'
+
 export type PDFOverlayItem = {
     id: string
     type: PDFOverlayType
     points: { x: number; y: number }[]   // Normalized 0..1
+    x?: number                             // Primary anchor X (normalized 0..1)
+    y?: number                             // Primary anchor Y (normalized 0..1)
     page?: number
     text?: string
     color?: string
@@ -132,10 +145,16 @@ export type PDFOverlayItem = {
     unit?: string
     // Balloon metadata
     balloonNo?: number
-    entityType?: 'Dimension' | 'Tolerance' | 'Note' | 'Specification'
+    entityType?: PDFOverlayEntityType
     drawingReference?: string
     description?: string
     remarks?: string
+    // Auto-detection metadata
+    confidence?: number                   // 0–1, from auto-detection
+    autoDetected?: boolean                // true = from auto-balloon, false = manual
+    sourceText?: string                   // raw text from PDF.js before classification
+    // Leader line offset (normalized, relative to anchor point)
+    leaderOffset?: { x: number; y: number }
 }
 
 // ─── Activity ─────────────────────────────────────────────────────────────────

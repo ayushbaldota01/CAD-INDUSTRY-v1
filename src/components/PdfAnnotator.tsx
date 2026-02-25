@@ -3,38 +3,26 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { v4 as uuidv4 } from 'uuid'
+import type { PDFOverlayItem } from '@/types'
+
+// Re-export for backward compatibility with existing imports
+export type OverlayItem = PDFOverlayItem
 
 // Configure worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
 
-export type OverlayItem = {
-    id: string
-    type: 'callout' | 'text' | 'arrow' | 'freehand' | 'dimension' | 'highlight' | 'comment' | 'issue'
-    points: { x: number; y: number }[] // Normalized 0..1
-    page?: number
-    text?: string
-    color?: string
-    distance?: number // Real-world distance for dimension
-    unit?: string // Unit of measurement
-    // Phase 2: Balloon Metadata
-    balloonNo?: number
-    entityType?: 'Dimension' | 'Tolerance' | 'Note' | 'Specification'
-    drawingReference?: string
-    description?: string
-    remarks?: string
-}
-
 type Props = {
     pdfUrl: string
-    overlayJson?: OverlayItem[]
-    onSaveAnnotation?: (item: OverlayItem) => Promise<OverlayItem | null> | void
+    overlayJson?: PDFOverlayItem[]
+    onSaveAnnotation?: (item: PDFOverlayItem) => Promise<PDFOverlayItem | null> | void
     onDeleteAnnotation?: (id: string) => void
-    onSaveOverlay?: (items: OverlayItem[]) => void
+    onSaveOverlay?: (items: PDFOverlayItem[]) => void
+    onPdfLoadError?: () => void
 }
 
 type HistoryAction = {
     type: 'add'
-    item: OverlayItem
+    item: PDFOverlayItem
 }
 
 export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotation, onDeleteAnnotation }: Props) {
@@ -83,6 +71,28 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     } | null>(null)
     const balloonInputRef = useRef<HTMLTextAreaElement>(null)
 
+    // Zoom & Pan
+    const [zoomLevel, setZoomLevel] = useState(1)
+    const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
+    const [isPanning, setIsPanning] = useState(false)
+    const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 })
+    const [showZoomIndicator, setShowZoomIndicator] = useState(false)
+    const zoomTimerRef = useRef<NodeJS.Timeout | null>(null)
+
+    // Inline calibration panel (replaces window.prompt)
+    const [pendingCalibration, setPendingCalibration] = useState<{
+        p1: { x: number; y: number }
+        p2: { x: number; y: number }
+        pixelDistance: number
+        inputMm: string
+    } | null>(null)
+
+    // Dragging leader line
+    const [draggingLeaderId, setDraggingLeaderId] = useState<string | null>(null)
+
+    // PDF load error
+    const [pdfError, setPdfError] = useState<string | null>(null)
+
     const showToast = useCallback((msg: string) => {
         setToast(msg)
         setTimeout(() => setToast(null), 3000)
@@ -96,13 +106,16 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
             setPendingBalloon(null)
             return
         }
-        const newItem: OverlayItem = {
+        const newItem: PDFOverlayItem = {
             id: uuidv4(),
             type,
             points: [coords],
+            x: coords.x,
+            y: coords.y,
             page: pageNumber,
             text: text.trim(),
-            color: type === 'issue' ? '#ef4444' : '#3b82f6'
+            color: type === 'issue' ? '#ef4444' : '#3b82f6',
+            leaderOffset: { x: 0.04, y: -0.04 },
         }
         setPendingBalloon(null)
         setTool('none')
@@ -366,12 +379,12 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const pixelDistance = Math.sqrt(dx * dx + dy * dy)
 
                 if (isCalibrating) {
-                    const knownDistance = prompt('Enter the known distance (in mm):')
-                    if (knownDistance && !isNaN(parseFloat(knownDistance))) {
-                        const distance = parseFloat(knownDistance)
-                        const scale = pixelDistance / distance
-                        setCalibrationScale(scale)
-                    }
+                    // Show inline calibration panel instead of window.prompt()
+                    setPendingCalibration({
+                        p1, p2,
+                        pixelDistance,
+                        inputMm: '',
+                    })
                     setIsCalibrating(false)
                 } else if (tool === 'dimension') {
                     if (!calibrationScale) {
@@ -382,10 +395,12 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
 
                     const distanceMm = pixelDistance / calibrationScale
 
-                    const newItem: OverlayItem = {
+                    const newItem: PDFOverlayItem = {
                         id: uuidv4(),
                         type: 'dimension',
                         points: [p1, p2],
+                        x: p1.x,
+                        y: p1.y,
                         page: pageNumber,
                         color: '#facc15',
                         distance: distanceMm,
@@ -441,10 +456,12 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
         if (tool === 'comment' || tool === 'issue') return
         if (tool === 'dimension' || isCalibrating) return // Handled by click-to-place
 
-        const newItem: OverlayItem = {
+        const newItem: PDFOverlayItem = {
             id: uuidv4(),
             type: tool,
             points: currentPath,
+            x: currentPath[0].x,
+            y: currentPath[0].y,
             page: pageNumber,
             color: tool === 'highlight' ? highlightColor : '#ef4444'
         }
@@ -647,9 +664,19 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const p = denorm(item.points[0])
 
                 // Engineering Balloon Style
-                // Leader offset (can be dynamic later, fixed for now)
-                const lx = 25
-                const ly = -25
+                // Leader offset from item data, default to {x: 0.04, y: -0.04}
+                const leaderOff = item.leaderOffset || { x: 0.04, y: -0.04 }
+                let lx = leaderOff.x * w
+                let ly = leaderOff.y * h
+
+                // Clamp leader length to max 150px
+                const leaderLen = Math.sqrt(lx * lx + ly * ly)
+                if (leaderLen > 150) {
+                    const clampRatio = 150 / leaderLen
+                    lx *= clampRatio
+                    ly *= clampRatio
+                }
+
                 const r = 14 // Balloon radius
 
                 // Calculate line end point (at circle boundary)
@@ -657,8 +684,10 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const lineEndX = lx - (r * Math.cos(angle))
                 const lineEndY = ly - (r * Math.sin(angle))
 
-                // Balloon Number: Use explicit balloonNo if available, otherwise index + 1
-                const balloonNum = item.balloonNo || (index + 1)
+                // Balloon Number: ALWAYS use item.balloonNo — never index fallback
+                const hasBalloonNo = item.balloonNo != null
+                const balloonNum = hasBalloonNo ? item.balloonNo : '?'
+                const balloonMissing = !hasBalloonNo
 
                 const isIssue = item.type === 'issue' || item.color === '#ef4444'
 
@@ -686,18 +715,24 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                             cy={ly}
                             r={r}
                             fill={isSelected ? '#1e293b' : 'white'}
-                            stroke={pinColor}
-                            strokeWidth="2"
+                            stroke={balloonMissing ? '#ef4444' : pinColor}
+                            strokeWidth={balloonMissing ? 3 : 2}
                             className="transition-all duration-200 shadow-sm"
+                            style={{ cursor: tool === 'none' ? 'move' : 'default' }}
                         />
+
+                        {/* Red error ring for missing balloon number */}
+                        {balloonMissing && (
+                            <circle cx={lx} cy={ly} r={r + 3} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="3,2" />
+                        )}
 
                         {/* Balloon Number */}
                         <text
                             x={lx}
                             y={ly}
-                            dy="4" // Vertical optical alignment
+                            dy="4"
                             textAnchor="middle"
-                            fill={isSelected ? 'white' : pinColor}
+                            fill={balloonMissing ? '#ef4444' : (isSelected ? 'white' : pinColor)}
                             fontSize={12}
                             fontWeight="bold"
                             className="pointer-events-none select-none font-mono"
@@ -705,9 +740,22 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                             {balloonNum}
                         </text>
 
-                        {/* Hover/Selection Detail (Optional subtle indicator) */}
+                        {/* Issue indicator */}
                         {isIssue && (
                             <circle cx={lx + r - 2} cy={ly - r + 2} r="4" fill="#ef4444" stroke="white" strokeWidth="1" />
+                        )}
+
+                        {/* Drag handle for leader repositioning (visible when selected, tool=none) */}
+                        {isSelected && tool === 'none' && (
+                            <circle
+                                cx={lx}
+                                cy={ly}
+                                r={4}
+                                fill={pinColor}
+                                stroke="white"
+                                strokeWidth="1.5"
+                                style={{ cursor: 'move' }}
+                            />
                         )}
                     </g>
                 )
@@ -715,13 +763,74 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
         }
     }
 
+    // ─── Zoom & Pan Handlers ────────────────────────────────────────
+    const handleWheel = useCallback((e: React.WheelEvent) => {
+        e.preventDefault()
+        const delta = e.deltaY < 0 ? 1.1 : 0.9
+        setZoomLevel(prev => {
+            const next = Math.min(5, Math.max(0.25, prev * delta))
+            // Show zoom indicator
+            setShowZoomIndicator(true)
+            if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current)
+            zoomTimerRef.current = setTimeout(() => setShowZoomIndicator(false), 1500)
+            return next
+        })
+    }, [])
+
+    const handlePanStart = useCallback((e: React.MouseEvent) => {
+        // Middle mouse button (button===1) or space+left for pan
+        if (e.button === 1 || (e.button === 0 && tool === 'none' && e.altKey)) {
+            e.preventDefault()
+            setIsPanning(true)
+            panStartRef.current = { x: e.clientX, y: e.clientY, panX: panOffset.x, panY: panOffset.y }
+        }
+    }, [tool, panOffset])
+
+    const handlePanMove = useCallback((e: React.MouseEvent) => {
+        if (!isPanning) return
+        const dx = e.clientX - panStartRef.current.x
+        const dy = e.clientY - panStartRef.current.y
+        setPanOffset({ x: panStartRef.current.panX + dx, y: panStartRef.current.panY + dy })
+    }, [isPanning])
+
+    const handlePanEnd = useCallback(() => {
+        setIsPanning(false)
+    }, [])
+
+    const resetView = useCallback(() => {
+        setZoomLevel(1)
+        setPanOffset({ x: 0, y: 0 })
+    }, [])
+
     return (
         <div className="flex flex-col h-full bg-slate-900 text-white relative">
             <div
                 ref={scrollContainerRef}
                 className="flex-1 overflow-hidden bg-slate-950 relative"
+                onWheel={handleWheel}
+                onMouseDown={handlePanStart}
+                onMouseMove={handlePanMove}
+                onMouseUp={handlePanEnd}
+                onMouseLeave={handlePanEnd}
             >
-                {/* Wrapper centers the PDF canvas */}
+                {/* Zoom indicator */}
+                {showZoomIndicator && (
+                    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-black/70 text-white px-4 py-1.5 rounded-full text-sm font-mono backdrop-blur-sm border border-white/10 pointer-events-none animate-pulse">
+                        {Math.round(zoomLevel * 100)}%
+                    </div>
+                )}
+
+                {/* Reset view button (shown when zoomed/panned) */}
+                {(zoomLevel !== 1 || panOffset.x !== 0 || panOffset.y !== 0) && (
+                    <button
+                        onClick={resetView}
+                        className="absolute bottom-4 right-4 z-40 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg text-xs border border-slate-600 transition-colors"
+                    >
+                        ⟲ Reset View
+                    </button>
+                )}
+
+                {/* Wrapper centers the PDF canvas, applies zoom/pan transform */}
                 <div ref={wrapperRef} className="w-full h-full flex items-center justify-center p-4 relative">
                     <div
                         ref={containerRef}
@@ -729,7 +838,10 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                         style={{
                             width: viewportDims.width,
                             height: viewportDims.height,
-                            cursor: (tool !== 'none' || isCalibrating) ? 'crosshair' : 'default'
+                            cursor: isPanning ? 'grabbing' : (tool !== 'none' || isCalibrating) ? 'crosshair' : 'default',
+                            transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+                            transformOrigin: 'center center',
+                            transition: isPanning ? 'none' : 'transform 0.1s ease-out',
                         }}
                         onMouseDown={handleMouseDown}
                         onMouseMove={handleMouseMove}
@@ -985,8 +1097,8 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                     }}
                 >
                     <div className={`rounded-xl shadow-2xl border overflow-hidden ${pendingBalloon.type === 'issue'
-                            ? 'bg-slate-900 border-red-500/60'
-                            : 'bg-slate-900 border-blue-500/60'
+                        ? 'bg-slate-900 border-red-500/60'
+                        : 'bg-slate-900 border-blue-500/60'
                         }`}>
                         {/* Panel header */}
                         <div className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold ${pendingBalloon.type === 'issue' ? 'bg-red-900/30 text-red-400' : 'bg-blue-900/30 text-blue-400'
@@ -1026,11 +1138,78 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                                 onClick={confirmBalloon}
                                 disabled={!pendingBalloon.text.trim()}
                                 className={`flex-1 py-1.5 text-xs font-semibold text-white rounded-lg transition disabled:opacity-40 ${pendingBalloon.type === 'issue'
-                                        ? 'bg-red-600 hover:bg-red-500'
-                                        : 'bg-blue-600 hover:bg-blue-500'
+                                    ? 'bg-red-600 hover:bg-red-500'
+                                    : 'bg-blue-600 hover:bg-blue-500'
                                     }`}
                             >
                                 Place Balloon
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Inline Calibration Panel (replaces native prompt()) ── */}
+            {pendingCalibration && (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50" style={{ width: 320 }}>
+                    <div className="rounded-xl shadow-2xl border border-yellow-500/60 bg-slate-900 overflow-hidden">
+                        <div className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-yellow-900/30 text-yellow-400">
+                            <span className="w-5 h-5 rounded-full flex items-center justify-center bg-yellow-500 text-white text-[10px] font-bold">📏</span>
+                            Calibrate Scale
+                        </div>
+                        <div className="p-4 space-y-3">
+                            <p className="text-xs text-slate-400">
+                                Line drawn: <span className="text-white font-mono">{pendingCalibration.pixelDistance.toFixed(1)}px</span>
+                            </p>
+                            <div>
+                                <label className="text-xs text-slate-300 block mb-1">Known distance (mm):</label>
+                                <input
+                                    type="number"
+                                    autoFocus
+                                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-yellow-500"
+                                    placeholder="e.g. 50"
+                                    value={pendingCalibration.inputMm}
+                                    onChange={e => setPendingCalibration(prev => prev ? { ...prev, inputMm: e.target.value } : null)}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                            const val = parseFloat(pendingCalibration.inputMm)
+                                            if (!isNaN(val) && val > 0) {
+                                                setCalibrationScale(pendingCalibration.pixelDistance / val)
+                                                showToast(`Calibrated: ${val}mm = ${pendingCalibration.pixelDistance.toFixed(1)}px`)
+                                            }
+                                            setPendingCalibration(null)
+                                            setCurrentPath([])
+                                        }
+                                        if (e.key === 'Escape') {
+                                            setPendingCalibration(null)
+                                            setCurrentPath([])
+                                        }
+                                    }}
+                                />
+                            </div>
+                            <p className="text-[10px] text-slate-600">Enter to confirm · Esc to cancel</p>
+                        </div>
+                        <div className="flex gap-2 px-4 pb-4">
+                            <button
+                                onClick={() => { setPendingCalibration(null); setCurrentPath([]) }}
+                                className="flex-1 py-1.5 text-xs text-slate-400 bg-slate-800 hover:bg-slate-700 rounded-lg transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    const val = parseFloat(pendingCalibration.inputMm)
+                                    if (!isNaN(val) && val > 0) {
+                                        setCalibrationScale(pendingCalibration.pixelDistance / val)
+                                        showToast(`Calibrated: ${val}mm = ${pendingCalibration.pixelDistance.toFixed(1)}px`)
+                                    }
+                                    setPendingCalibration(null)
+                                    setCurrentPath([])
+                                }}
+                                disabled={!pendingCalibration.inputMm || isNaN(parseFloat(pendingCalibration.inputMm))}
+                                className="flex-1 py-1.5 text-xs font-semibold text-white bg-yellow-600 hover:bg-yellow-500 rounded-lg transition disabled:opacity-40"
+                            >
+                                Set Scale
                             </button>
                         </div>
                     </div>

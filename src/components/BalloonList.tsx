@@ -1,12 +1,12 @@
 import React, { useState } from 'react'
-import { OverlayItem } from './PdfAnnotator'
+import type { PDFOverlayItem } from '@/types'
 import { PencilIcon, TrashIcon, MapPinIcon, CheckIcon, XMarkIcon, SparklesIcon, ArrowDownTrayIcon, ChevronDownIcon, ChatBubbleLeftIcon } from '@heroicons/react/24/outline'
 
 type BalloonListProps = {
-    items: OverlayItem[]
+    items: PDFOverlayItem[]
     selectedId: string | null
     onSelect: (id: string) => void
-    onUpdate: (id: string, updates: Partial<OverlayItem>) => void
+    onUpdate: (id: string, updates: Partial<PDFOverlayItem>) => void
     onDelete: (id: string) => void
     onAutoBalloon?: () => void
     onExport?: () => void
@@ -15,10 +15,10 @@ type BalloonListProps = {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 /** Only 'comment' and 'issue' types are proper balloons */
-const BALLOON_TYPES: OverlayItem['type'][] = ['comment', 'issue', 'callout']
+const BALLOON_TYPES: PDFOverlayItem['type'][] = ['comment', 'issue', 'callout']
 
 /** Derive the user-facing label from color and type */
-function getBalloonLabel(item: OverlayItem): { label: string; color: 'blue' | 'red' | 'neutral' } {
+function getBalloonLabel(item: PDFOverlayItem): { label: string; color: 'blue' | 'red' | 'neutral' } {
     const isIssue = item.type === 'issue'
     const colorStr = (item.color || '').toLowerCase()
 
@@ -35,7 +35,7 @@ function getBalloonLabel(item: OverlayItem): { label: string; color: 'blue' | 'r
     return { label: item.type === 'comment' ? 'Comment' : item.type === 'issue' ? 'Critical' : 'Note', color: 'neutral' }
 }
 
-function BalloonBadge({ item }: { item: OverlayItem }) {
+function BalloonBadge({ item }: { item: PDFOverlayItem }) {
     const { label, color } = getBalloonLabel(item)
     if (color === 'red') {
         return (
@@ -62,14 +62,14 @@ function BalloonBadge({ item }: { item: OverlayItem }) {
 
 export default function BalloonList({ items, selectedId, onSelect, onUpdate, onDelete, onAutoBalloon, onExport }: BalloonListProps) {
     const [editingId, setEditingId] = useState<string | null>(null)
-    const [editForm, setEditForm] = useState<Partial<OverlayItem>>({})
+    const [editForm, setEditForm] = useState<Partial<PDFOverlayItem>>({})
     const [expandedId, setExpandedId] = useState<string | null>(null)
 
     // ── ONLY show true balloon types ──
     const balloonItems = items.filter(i => BALLOON_TYPES.includes(i.type as any))
     const sortedItems = [...balloonItems].sort((a, b) => (a.balloonNo || 0) - (b.balloonNo || 0))
 
-    const handleEditStart = (item: OverlayItem) => {
+    const handleEditStart = (item: PDFOverlayItem) => {
         setEditingId(item.id)
         setEditForm({
             balloonNo: item.balloonNo,
@@ -94,7 +94,7 @@ export default function BalloonList({ items, selectedId, onSelect, onUpdate, onD
         setEditForm({})
     }
 
-    const handleRowClick = (item: OverlayItem) => {
+    const handleRowClick = (item: PDFOverlayItem) => {
         onSelect(item.id)
         setExpandedId(prev => prev === item.id ? null : item.id)
     }
@@ -163,10 +163,10 @@ export default function BalloonList({ items, selectedId, onSelect, onUpdate, onD
                             <div
                                 key={item.id}
                                 className={`rounded-xl border transition-all duration-200 group ${isSelected
-                                        ? color === 'red'
-                                            ? 'bg-red-950/30 border-red-500/50 shadow-md shadow-red-900/20'
-                                            : 'bg-indigo-950/30 border-indigo-500/50 shadow-md shadow-indigo-900/20'
-                                        : 'bg-slate-900/40 border-slate-800 hover:border-slate-600'
+                                    ? color === 'red'
+                                        ? 'bg-red-950/30 border-red-500/50 shadow-md shadow-red-900/20'
+                                        : 'bg-indigo-950/30 border-indigo-500/50 shadow-md shadow-indigo-900/20'
+                                    : 'bg-slate-900/40 border-slate-800 hover:border-slate-600'
                                     }`}
                             >
                                 {isEditing ? (
@@ -251,8 +251,8 @@ export default function BalloonList({ items, selectedId, onSelect, onUpdate, onD
                                             <div className="flex-1 min-w-0">
                                                 {/* Label: "Comment" or "Critical" */}
                                                 <div className={`text-xs font-semibold ${color === 'red' ? 'text-red-400' :
-                                                        color === 'blue' ? 'text-blue-400' :
-                                                            'text-slate-300'
+                                                    color === 'blue' ? 'text-blue-400' :
+                                                        'text-slate-300'
                                                     }`}>
                                                     {label}
                                                 </div>
@@ -328,10 +328,10 @@ export default function BalloonList({ items, selectedId, onSelect, onUpdate, onD
                                                 <div className="flex justify-between items-center pt-1">
                                                     <span className="text-[10px] text-slate-600">Page {item.page || 1}</span>
                                                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${color === 'red'
-                                                            ? 'bg-red-900/40 text-red-400 border border-red-700/40'
-                                                            : color === 'blue'
-                                                                ? 'bg-blue-900/40 text-blue-400 border border-blue-700/40'
-                                                                : 'bg-slate-800 text-slate-400'
+                                                        ? 'bg-red-900/40 text-red-400 border border-red-700/40'
+                                                        : color === 'blue'
+                                                            ? 'bg-blue-900/40 text-blue-400 border border-blue-700/40'
+                                                            : 'bg-slate-800 text-slate-400'
                                                         }`}>
                                                         {label}
                                                     </span>

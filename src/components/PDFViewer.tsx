@@ -1,10 +1,12 @@
 'use client'
 
 import React, { useMemo, useState } from 'react'
-import PdfAnnotator, { OverlayItem } from './PdfAnnotator'
+import PdfAnnotator from './PdfAnnotator'
+import type { PDFOverlayItem } from '@/types'
 import BalloonList from './BalloonList'
 import { useAnnotations } from '@/hooks/useAnnotations'
-import { extractTextFromPDF, analyzeTextItems } from '@/lib/autoBalloon'
+import { runAutoBalloon, ScannedPDFError } from '@/lib/autoBalloon'
+import { resequenceBalloons, nextBalloonNo } from '@/lib/balloonUtils'
 import { AlertDialog } from '@/components/ui/Dialogs'
 import * as XLSX from 'xlsx'
 import { v4 as uuidv4 } from 'uuid'
@@ -34,45 +36,48 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
     const [isAutoBallooning, setIsAutoBallooning] = useState(false)
     const [alertDialog, setAlertDialog] = useState<{ title: string; message: string; variant: 'info' | 'success' | 'warning' | 'error' } | null>(null)
 
-    // Map DB annotations to OverlayItems
-    const overlayItems = useMemo<OverlayItem[]>(() => {
+    // Map DB annotations to PDFOverlayItems
+    const overlayItems = useMemo<PDFOverlayItem[]>(() => {
         return annotations.map(ann => {
-            // Check if this annotation is for PDF (has 'page' in position)
             const pos = ann.position as any
-
-            // If it's a 3D annotation (array), skip
             if (Array.isArray(pos)) return null
 
-            // Detect legacy or new format
-            // New format: pos contains { page, type, points, color, ... }
             if (pos.points && Array.isArray(pos.points)) {
+                const firstPt = pos.points[0] || { x: 0, y: 0 }
                 return {
                     id: ann.id,
-                    type: pos.type || 'comment', // Restored type
+                    type: pos.type || 'comment',
                     points: pos.points,
+                    x: firstPt.x,
+                    y: firstPt.y,
                     page: pos.page || 1,
                     text: ann.text || pos.text,
                     color: pos.color || 'red',
-                    // New Metadata Fields
                     balloonNo: pos.balloonNo,
                     entityType: pos.entityType,
                     description: pos.description,
                     remarks: pos.remarks,
-                    drawingReference: pos.drawingReference
+                    drawingReference: pos.drawingReference,
+                    confidence: pos.confidence,
+                    autoDetected: pos.autoDetected,
+                    sourceText: pos.sourceText,
+                    leaderOffset: pos.leaderOffset,
                 }
             }
 
-            // Legacy format fallback (point only)
+            // Legacy format fallback
             return {
                 id: ann.id,
-                type: 'callout',
+                type: 'callout' as const,
                 points: [{ x: pos.x || 0, y: pos.y || 0 }],
+                x: pos.x || 0,
+                y: pos.y || 0,
                 page: pos.page || 1,
                 text: ann.text,
                 color: 'red',
-                balloonNo: 0 // Will display as index fallback
+                balloonNo: undefined,
             }
-        }).filter(Boolean) as OverlayItem[]
+        }).filter(Boolean) as PDFOverlayItem[]
     }, [annotations])
 
     const BALLOON_TYPES = ['comment', 'issue', 'callout'] as const
@@ -90,7 +95,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
         return 'Note'
     }
 
-    const handleSaveOverlay = async (item: OverlayItem): Promise<OverlayItem | null> => {
+    const handleSaveOverlay = async (item: PDFOverlayItem): Promise<PDFOverlayItem | null> => {
         if (!item.points.length) return null
 
         const page = item.page || 1
@@ -99,10 +104,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
         // Only balloon types get an auto-incremented number
         let balloonNo = item.balloonNo
         if (isBalloon && !balloonNo) {
-            const maxNo = overlayItems
-                .filter(i => isBalloonType(i.type))
-                .reduce((max, i) => Math.max(max, i.balloonNo || 0), 0)
-            balloonNo = maxNo + 1
+            balloonNo = nextBalloonNo(overlayItems)
         }
 
         const entityType = item.entityType || colorToEntityType(item.color, item.type)
@@ -139,7 +141,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
         return null
     }
 
-    const handleUpdateOverlay = async (id: string, updates: Partial<OverlayItem>) => {
+    const handleUpdateOverlay = async (id: string, updates: Partial<PDFOverlayItem>) => {
         const existing = overlayItems.find(i => i.id === id)
         if (!existing) return
 
@@ -167,51 +169,53 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
     }
 
     // ===========================================
-    // AUTO BALLOON ENGINE
+    // AUTO BALLOON ENGINE (uses new module)
     // ===========================================
     const handleAutoBalloon = async () => {
         setIsAutoBallooning(true)
         try {
-            const extracted = await extractTextFromPDF(url)
-            const candidates = analyzeTextItems(extracted)
+            const existingCount = overlayItems.filter(i => isBalloonType(i.type)).length
+            const detected = await runAutoBalloon(url, existingCount)
 
-            // Find max existing balloon number
-            let nextNo = overlayItems.reduce((max, i) => Math.max(max, i.balloonNo || 0), 0) + 1
-
-            // Batch create items
             let count = 0
-            for (const item of candidates) {
-                // Convert rect center to point
-                // item.x, item.y are top-left normalized
-                const centerX = item.x + (item.width / 2)
-                const centerY = item.y + (item.height / 2)
-
-                const newItem: OverlayItem = {
+            for (const item of detected) {
+                // Assign unique ID
+                const newItem: PDFOverlayItem = {
+                    ...item,
                     id: uuidv4(),
-                    type: 'comment',
-                    points: [{ x: centerX, y: centerY }],
-                    page: item.page,
-                    text: item.text,
-                    color: '#3b82f6',
-                    balloonNo: nextNo++,
-                    entityType: item.type as any, // 'Dimension' | 'Note' ...
-                    drawingReference: item.text,
-                    description: `Auto-detected ${item.type}`,
                 }
-
                 await handleSaveOverlay(newItem)
                 count++
             }
 
             if (count > 0) {
-                setAlertDialog({ title: 'Auto-Balloon Complete', message: `Created ${count} balloons from detected engineering entities.`, variant: 'success' })
+                setAlertDialog({
+                    title: 'Auto-Balloon Complete',
+                    message: `Created ${count} balloons from detected engineering entities (dimensions, tolerances, GD&T, threads, etc.).`,
+                    variant: 'success',
+                })
             } else {
-                setAlertDialog({ title: 'No Entities Found', message: 'No new engineering entities were found to balloon in this drawing.', variant: 'info' })
+                setAlertDialog({
+                    title: 'No Entities Found',
+                    message: 'No engineering entities were detected. This may be a scanned drawing or a drawing without text annotations.',
+                    variant: 'info',
+                })
             }
-
         } catch (e) {
-            console.error("Auto balloon error:", e)
-            setAlertDialog({ title: 'Auto-Balloon Failed', message: 'An error occurred while analyzing the drawing. Please try again.', variant: 'error' })
+            console.error('Auto balloon error:', e)
+            if (e instanceof ScannedPDFError) {
+                setAlertDialog({
+                    title: 'Scanned Drawing Detected',
+                    message: e.message,
+                    variant: 'warning',
+                })
+            } else {
+                setAlertDialog({
+                    title: 'Auto-Balloon Failed',
+                    message: 'An error occurred while analyzing the drawing. Please try again.',
+                    variant: 'error',
+                })
+            }
         } finally {
             setIsAutoBallooning(false)
         }
