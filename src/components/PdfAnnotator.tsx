@@ -18,6 +18,7 @@ type Props = {
     onDeleteAnnotation?: (id: string) => void
     onSaveOverlay?: (items: PDFOverlayItem[]) => void
     onPdfLoadError?: () => void
+    onUpdateLeader?: (id: string, leaderOffset: { x: number; y: number }) => void
 }
 
 type HistoryAction = {
@@ -25,7 +26,7 @@ type HistoryAction = {
     item: PDFOverlayItem
 }
 
-export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotation, onDeleteAnnotation }: Props) {
+export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotation, onDeleteAnnotation, onUpdateLeader }: Props) {
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null)
     const [numPages, setNumPages] = useState(0)
     const [pageNumber, setPageNumber] = useState(1)
@@ -89,6 +90,9 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
 
     // Dragging leader line
     const [draggingLeaderId, setDraggingLeaderId] = useState<string | null>(null)
+    const leaderDragStartRef = useRef<{ mouseX: number; mouseY: number; origOffset: { x: number; y: number } } | null>(null)
+    const draggingLeaderOffsetRef = useRef<{ x: number; y: number } | null>(null)
+    const [draggingLeaderPreview, setDraggingLeaderPreview] = useState<{ id: string; offset: { x: number; y: number } } | null>(null)
 
     // PDF load error
     const [pdfError, setPdfError] = useState<string | null>(null)
@@ -320,32 +324,28 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     // -------------------------------------------------------------------------
     // COORDINATE HANDLING - Use viewportDims for accurate normalization
     // -------------------------------------------------------------------------
+    // BUG 1 FIX: Use rect.width/height (which include CSS scale from zoom)
+    // instead of viewportDims (unscaled canvas size). This makes annotation
+    // placement correct at any zoom level.
     const getNormCoords = useCallback((e: React.MouseEvent) => {
-        if (!containerRef.current || viewportDims.width === 0 || viewportDims.height === 0) {
-            return { x: 0, y: 0 }
-        }
-
+        if (!containerRef.current) return { x: 0, y: 0 }
         const rect = containerRef.current.getBoundingClientRect()
-        const px = e.clientX - rect.left
-        const py = e.clientY - rect.top
-
-        // Use viewportDims for normalization to ensure consistency with rendered canvas
-        let x = px / viewportDims.width
-        let y = py / viewportDims.height
-
-        // Clamp to valid range
-        x = Math.max(0, Math.min(1, x))
-        y = Math.max(0, Math.min(1, y))
-
+        if (rect.width === 0 || rect.height === 0) return { x: 0, y: 0 }
+        const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+        const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
         return { x, y }
-    }, [viewportDims])
+    }, [])
 
+    // BUG 5 FIX: tool==='none' + left-drag on empty canvas starts pan
     const handleMouseDown = (e: React.MouseEvent) => {
         if (e.button !== 0) return
 
         if (tool === 'none') {
             if (e.target === containerRef.current || e.target === canvasRef.current) {
                 setSelectedId(null)
+                // Start panning on left-drag over empty area
+                setIsPanning(true)
+                panStartRef.current = { x: e.clientX, y: e.clientY, panX: panOffset.x, panY: panOffset.y }
             }
             return
         }
@@ -427,6 +427,32 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null)
 
     const handleMouseMove = (e: React.MouseEvent) => {
+        // BUG 6: Leader drag — handle BEFORE early returns
+        if (draggingLeaderId && leaderDragStartRef.current) {
+            const start = leaderDragStartRef.current
+            const rect = containerRef.current?.getBoundingClientRect()
+            if (rect) {
+                const dxPx = e.clientX - start.mouseX
+                const dyPx = e.clientY - start.mouseY
+                const dxNorm = dxPx / rect.width
+                const dyNorm = dyPx / rect.height
+                let newX = start.origOffset.x + dxNorm
+                let newY = start.origOffset.y + dyNorm
+                // Clamp leader length max 150px in normalized space
+                const lenPx = Math.sqrt(
+                    Math.pow(newX * rect.width, 2) + Math.pow(newY * rect.height, 2)
+                )
+                if (lenPx > 150) {
+                    const clamp = 150 / lenPx
+                    newX *= clamp
+                    newY *= clamp
+                }
+                draggingLeaderOffsetRef.current = { x: newX, y: newY }
+                setDraggingLeaderPreview({ id: draggingLeaderId, offset: { x: newX, y: newY } })
+            }
+            return
+        }
+
         const coords = getNormCoords(e)
 
         // Always track hover for dimension/calibration preview
@@ -452,6 +478,17 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     }
 
     const handleMouseUp = () => {
+        // BUG 6: Commit leader drag
+        if (draggingLeaderId && draggingLeaderOffsetRef.current) {
+            onUpdateLeader?.(draggingLeaderId, draggingLeaderOffsetRef.current)
+            setDraggingLeaderId(null)
+            setDraggingLeaderPreview(null)
+            draggingLeaderOffsetRef.current = null
+            leaderDragStartRef.current = null
+            return
+        }
+
+        // BUG 5: End pan on mouse up (isPanning is reset by handlePanEnd on scrollContainer)
         if (tool === 'none' || currentPath.length === 0) return
         if (tool === 'comment' || tool === 'issue') return
         if (tool === 'dimension' || isCalibrating) return // Handled by click-to-place
@@ -664,8 +701,10 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                 const p = denorm(item.points[0])
 
                 // Engineering Balloon Style
-                // Leader offset from item data, default to {x: 0.04, y: -0.04}
-                const leaderOff = item.leaderOffset || { x: 0.04, y: -0.04 }
+                // BUG 6: Use live preview offset during drag, otherwise item data
+                const leaderOff = (draggingLeaderPreview?.id === item.id)
+                    ? draggingLeaderPreview.offset
+                    : (item.leaderOffset || { x: 0.04, y: -0.04 })
                 let lx = leaderOff.x * w
                 let ly = leaderOff.y * h
 
@@ -745,16 +784,22 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                             <circle cx={lx + r - 2} cy={ly - r + 2} r="4" fill="#ef4444" stroke="white" strokeWidth="1" />
                         )}
 
-                        {/* Drag handle for leader repositioning (visible when selected, tool=none) */}
+                        {/* BUG 6: Drag handle for leader repositioning — wired to drag logic */}
                         {isSelected && tool === 'none' && (
                             <circle
-                                cx={lx}
-                                cy={ly}
-                                r={4}
-                                fill={pinColor}
-                                stroke="white"
-                                strokeWidth="1.5"
+                                cx={lx} cy={ly} r={4}
+                                fill={pinColor} stroke="white" strokeWidth="1.5"
                                 style={{ cursor: 'move' }}
+                                onMouseDown={(ev) => {
+                                    ev.stopPropagation()
+                                    ev.preventDefault()
+                                    setDraggingLeaderId(item.id)
+                                    leaderDragStartRef.current = {
+                                        mouseX: ev.clientX,
+                                        mouseY: ev.clientY,
+                                        origOffset: item.leaderOffset || { x: 0.04, y: -0.04 },
+                                    }
+                                }}
                             />
                         )}
                     </g>
@@ -764,12 +809,26 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
     }
 
     // ─── Zoom & Pan Handlers ────────────────────────────────────────
+    // BUG 4 FIX: Zoom towards cursor position
     const handleWheel = useCallback((e: React.WheelEvent) => {
         e.preventDefault()
-        const delta = e.deltaY < 0 ? 1.1 : 0.9
+        if (!scrollContainerRef.current) return
+
+        const rect = scrollContainerRef.current.getBoundingClientRect()
+        // Cursor position relative to container center (where transformOrigin is)
+        const cursorX = e.clientX - rect.left - rect.width / 2
+        const cursorY = e.clientY - rect.top - rect.height / 2
+
+        const factor = e.deltaY < 0 ? 1.1 : 0.9
+
         setZoomLevel(prev => {
-            const next = Math.min(5, Math.max(0.25, prev * delta))
-            // Show zoom indicator
+            const next = Math.min(5, Math.max(0.25, prev * factor))
+            const ratio = next / prev
+            // Shift pan offset so the point under cursor stays fixed
+            setPanOffset(p => ({
+                x: cursorX - (cursorX - p.x) * ratio,
+                y: cursorY - (cursorY - p.y) * ratio,
+            }))
             setShowZoomIndicator(true)
             if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current)
             zoomTimerRef.current = setTimeout(() => setShowZoomIndicator(false), 1500)
@@ -777,14 +836,14 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
         })
     }, [])
 
+    // BUG 5 FIX: Middle mouse always pans; removed altKey requirement
     const handlePanStart = useCallback((e: React.MouseEvent) => {
-        // Middle mouse button (button===1) or space+left for pan
-        if (e.button === 1 || (e.button === 0 && tool === 'none' && e.altKey)) {
+        if (e.button === 1) {
             e.preventDefault()
             setIsPanning(true)
             panStartRef.current = { x: e.clientX, y: e.clientY, panX: panOffset.x, panY: panOffset.y }
         }
-    }, [tool, panOffset])
+    }, [panOffset])
 
     const handlePanMove = useCallback((e: React.MouseEvent) => {
         if (!isPanning) return
@@ -838,7 +897,7 @@ export default function PdfAnnotator({ pdfUrl, overlayJson = [], onSaveAnnotatio
                         style={{
                             width: viewportDims.width,
                             height: viewportDims.height,
-                            cursor: isPanning ? 'grabbing' : (tool !== 'none' || isCalibrating) ? 'crosshair' : 'default',
+                            cursor: isPanning ? 'grabbing' : isCalibrating ? 'crosshair' : tool !== 'none' ? 'crosshair' : 'grab',
                             transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
                             transformOrigin: 'center center',
                             transition: isPanning ? 'none' : 'transform 0.1s ease-out',

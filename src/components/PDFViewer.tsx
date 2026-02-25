@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useCallback } from 'react'
 import PdfAnnotator from './PdfAnnotator'
 import type { PDFOverlayItem } from '@/types'
 import BalloonList from './BalloonList'
@@ -8,7 +8,6 @@ import { useAnnotations } from '@/hooks/useAnnotations'
 import { runAutoBalloon, ScannedPDFError } from '@/lib/autoBalloon'
 import { resequenceBalloons, nextBalloonNo } from '@/lib/balloonUtils'
 import { AlertDialog } from '@/components/ui/Dialogs'
-import * as XLSX from 'xlsx'
 import { v4 as uuidv4 } from 'uuid'
 
 // Simple icons for the sidebar toggle
@@ -30,7 +29,7 @@ interface PDFViewerProps {
 }
 
 export default function PDFViewer({ url, modelId }: PDFViewerProps) {
-    const { annotations, createAnnotation, updateAnnotation, deleteAnnotation } = useAnnotations(modelId)
+    const { annotations, createAnnotation, updateAnnotation, deleteAnnotation, refresh } = useAnnotations(modelId)
     const [selectedId, setSelectedId] = useState<string | null>(null)
     const [showSidebar, setShowSidebar] = useState(true)
     const [isAutoBallooning, setIsAutoBallooning] = useState(false)
@@ -122,7 +121,11 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                 entityType,
                 description: item.description || '',
                 remarks: item.remarks || '',
-                drawingReference: item.drawingReference || ''
+                drawingReference: item.drawingReference || '',
+                leaderOffset: item.leaderOffset || { x: 0.04, y: -0.04 },
+                confidence: item.confidence,
+                autoDetected: item.autoDetected ?? false,
+                sourceText: item.sourceText || '',
             } : {})
         }
 
@@ -158,7 +161,11 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
             entityType: merged.entityType,
             description: merged.description,
             remarks: merged.remarks,
-            drawingReference: merged.drawingReference
+            drawingReference: merged.drawingReference,
+            leaderOffset: merged.leaderOffset,
+            confidence: merged.confidence,
+            autoDetected: merged.autoDetected,
+            sourceText: merged.sourceText,
         }
 
         await updateAnnotation(id, {
@@ -221,37 +228,54 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
         }
     }
 
+    // BUG 2 FIX: Wrap deleteAnnotation to resequence balloon numbers after delete
+    const handleDeleteOverlay = useCallback(async (id: string) => {
+        await deleteAnnotation(id)
+        // Resequence remaining balloons after state settles
+        setTimeout(async () => {
+            const remaining = overlayItems.filter(i => i.id !== id)
+            const resequenced = resequenceBalloons(remaining)
+            for (const item of resequenced) {
+                const original = remaining.find(r => r.id === item.id)
+                if (original && original.balloonNo !== item.balloonNo) {
+                    await handleUpdateOverlay(item.id, { balloonNo: item.balloonNo })
+                }
+            }
+            await refresh()
+        }, 100)
+    }, [deleteAnnotation, overlayItems, handleUpdateOverlay, refresh])
+
     // ===========================================
-    // EXCEL EXPORT
+    // EXCEL EXPORT — BUG 3b FIX: POST to API route instead of client-side XLSX
     // ===========================================
-    const handleExport = () => {
-        if (overlayItems.length === 0) {
-            setAlertDialog({ title: 'Nothing to Export', message: 'Add some balloon annotations before exporting.', variant: 'warning' })
+    const handleExport = async () => {
+        const balloons = overlayItems.filter(i => isBalloonType(i.type))
+        if (balloons.length === 0) {
+            setAlertDialog({ title: 'Nothing to Export', message: 'Add balloon annotations before exporting.', variant: 'warning' })
             return
         }
-
-        const data = overlayItems
-            .sort((a, b) => (a.balloonNo || 0) - (b.balloonNo || 0))
-            .map(item => ({
-                "Balloon No.": item.balloonNo,
-                "Reference": item.drawingReference || item.text || '-',
-                "Type": item.entityType || 'Note',
-                "Description": item.description || '-',
-                "Page": item.page,
-                "Remarks": item.remarks || '-'
-            }))
-
-        const ws = XLSX.utils.json_to_sheet(data)
-
-        // Auto-width columns
-        const wscols = Object.keys(data[0]).map(k => ({ wch: 20 }))
-        ws['!cols'] = wscols
-
-        const wb = XLSX.utils.book_new()
-        XLSX.utils.book_append_sheet(wb, ws, "Inspection Report")
-
-        // Save file
-        XLSX.writeFile(wb, `Inspection_Report_${new Date().toISOString().slice(0, 10)}.xlsx`)
+        try {
+            setAlertDialog(null)
+            const res = await fetch('/api/export-balloons', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ balloons, fileName: 'Drawing' }),
+            })
+            if (!res.ok) throw new Error('Export failed')
+            const blob = await res.blob()
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `Balloon_Report_${new Date().toISOString().slice(0, 10)}.xlsx`
+            document.body.appendChild(a)
+            a.click()
+            URL.revokeObjectURL(url)
+            document.body.removeChild(a)
+            setAlertDialog({ title: 'Export Complete', message: `${balloons.length} balloons exported to Excel.`, variant: 'success' })
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : 'Unknown error'
+            setAlertDialog({ title: 'Export Failed', message: msg, variant: 'error' })
+        }
     }
 
     if (!url) {
@@ -266,7 +290,8 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                     pdfUrl={url}
                     overlayJson={overlayItems}
                     onSaveAnnotation={handleSaveOverlay}
-                    onDeleteAnnotation={deleteAnnotation}
+                    onDeleteAnnotation={handleDeleteOverlay}
+                    onUpdateLeader={(id, leaderOffset) => handleUpdateOverlay(id, { leaderOffset })}
                 />
 
                 {/* Sidebar Toggle Button */}
@@ -297,7 +322,7 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                         selectedId={selectedId}
                         onSelect={setSelectedId}
                         onUpdate={handleUpdateOverlay}
-                        onDelete={deleteAnnotation}
+                        onDelete={handleDeleteOverlay}
                         onAutoBalloon={handleAutoBalloon}
                         onExport={handleExport}
                     />

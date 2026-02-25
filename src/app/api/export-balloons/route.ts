@@ -22,6 +22,9 @@ interface BalloonExportItem {
     remarks?: string
 }
 
+// NOTE: xlsx@0.18.5 Community Edition does not support cell styling (cell.s).
+// Structure, column widths, freeze, autofilter, and merges are fully supported.
+// To add colors/bold, upgrade to SheetJS Pro or replace with exceljs.
 function buildWorkbook(balloons: BalloonExportItem[], fileName: string): XLSX.WorkBook {
     const date = new Date().toLocaleDateString('en-US', {
         year: 'numeric',
@@ -89,59 +92,8 @@ function buildWorkbook(balloons: BalloonExportItem[], fileName: string): XLSX.Wo
         { hpt: 22 },   // Row 2 — column headers
     ]
 
-    // Apply styles (xlsx-community supports styles, basic xlsx does not fully)
-    // Styling via cell properties where possible
-    // Header row styling
-    const headerCell = ws['A1']
-    if (headerCell) {
-        headerCell.s = {
-            font: { bold: true, sz: 14, color: { rgb: 'FFFFFF' } },
-            fill: { fgColor: { rgb: '1F3864' } },
-            alignment: { horizontal: 'center', vertical: 'center' },
-        }
-    }
-
-    // Column header styling
-    for (let c = 0; c < columns.length; c++) {
-        const ref = XLSX.utils.encode_cell({ r: 1, c })
-        const cell = ws[ref]
-        if (cell) {
-            cell.s = {
-                font: { bold: true, sz: 11, color: { rgb: 'FFFFFF' } },
-                fill: { fgColor: { rgb: '1F3864' } },
-                alignment: { horizontal: 'center', vertical: 'center' },
-                border: {
-                    bottom: { style: 'thin', color: { rgb: '000000' } },
-                },
-            }
-        }
-    }
-
-    // Data row styling — alternating fills
-    for (let r = 2; r < aoa.length; r++) {
-        const isAlt = (r - 2) % 2 === 1
-        for (let c = 0; c < columns.length; c++) {
-            const ref = XLSX.utils.encode_cell({ r, c })
-            const cell = ws[ref]
-            if (cell) {
-                cell.s = {
-                    fill: isAlt ? { fgColor: { rgb: 'EEF2FF' } } : undefined,
-                    alignment: { vertical: 'center', wrapText: true },
-                    border: {
-                        bottom: { style: 'hair', color: { rgb: 'CCCCCC' } },
-                    },
-                }
-
-                // Protect columns A (balloonNo) and E (page) — read-only marker
-                if (c === 0 || c === 4) {
-                    cell.s = {
-                        ...cell.s,
-                        protection: { locked: true },
-                    }
-                }
-            }
-        }
-    }
+    // NOTE: The community edition of xlsx does not support cell styling (cell.s) or sheet protection (!protect).
+    // Only structural features like merges, column widths, freeze panes, and autofilters are supported.
 
     // ─── Sheet 2: Summary ──────────────────────────────────────────
 
@@ -164,28 +116,10 @@ function buildWorkbook(balloons: BalloonExportItem[], fileName: string): XLSX.Wo
     summaryWs['!cols'] = [{ wch: 20 }, { wch: 10 }]
     summaryWs['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }]
 
-    // Style summary header
-    const summaryHeader = summaryWs['A1']
-    if (summaryHeader) {
-        summaryHeader.s = {
-            font: { bold: true, sz: 13, color: { rgb: 'FFFFFF' } },
-            fill: { fgColor: { rgb: '1F3864' } },
-            alignment: { horizontal: 'center' },
-        }
-    }
-
     // Build workbook
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Balloon Report')
     XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary')
-
-        // Sheet protection on main sheet (cast to bypass strict typing)
-        ; (ws as any)['!protect'] = {
-            password: '',
-            sheet: true,
-            objects: true,
-            scenarios: true,
-        }
 
     return wb
 }

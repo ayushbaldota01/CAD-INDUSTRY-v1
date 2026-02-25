@@ -255,21 +255,16 @@ function mergeTextItems(items: RawTextItem[]): RawTextItem[] {
                 const yDiff = Math.abs(current.rawY - next.rawY)
                 const gap = next.rawX - (current.rawX + current.rawW)
 
-                // Same line (Y within 3px) and gap < 3px
-                if (yDiff <= 3 && gap >= -2 && gap <= 3) {
-                    // Merge
+                // GAP 2 FIX: Increase Y tolerance to 4px, gap to 8px for real engineering PDFs
+                if (yDiff <= 4 && gap >= -2 && gap <= 8) {
                     const newRawW = (next.rawX + next.rawW) - current.rawX
+                    // Correct normalized width: vpWidth = rawX / x (only valid when x > 0)
+                    const vpWidth = current.x > 0 ? current.rawX / current.x : 1
                     current = {
                         ...current,
-                        text: current.text + next.text,
+                        text: current.text + (gap > 1 ? ' ' : '') + next.text,
                         rawW: newRawW,
-                        width: newRawW / (current.width > 0 ? current.width / current.x : 1), // rough recalc
-                    }
-                    // Recalculate normalized width
-                    if (current.x > 0 && current.width > 0) {
-                        // Use first item's viewport ratio
-                        const vpWidth = current.rawX / current.x
-                        current.width = newRawW / vpWidth
+                        width: newRawW / vpWidth,
                     }
                     used.add(j)
                 }
@@ -401,8 +396,8 @@ export async function runAutoBalloon(
     }
 
     // Step 4: Deduplicate by proximity
-    // Use approximate viewport dimensions for threshold calculation
-    const deduped = deduplicateByProximity(detected, 800, 600)
+    // GAP 2 FIX: Use larger viewport dims for A3/A4 engineering drawings at scale 1
+    const deduped = deduplicateByProximity(detected, 1200, 900)
 
     // Step 5: Assign sequential balloon numbers starting after existing
     let balloonNo = existingCount + 1
