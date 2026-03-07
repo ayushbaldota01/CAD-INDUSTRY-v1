@@ -5,7 +5,7 @@ import PdfAnnotator from './PdfAnnotator'
 import type { PDFOverlayItem } from '@/types'
 import BalloonList from './BalloonList'
 import { useAnnotations } from '@/hooks/useAnnotations'
-import { runAutoBalloon, ScannedPDFError } from '@/lib/autoBalloon'
+import { runAutoBalloon, ScannedPDFError, VectorNoTextError } from '@/lib/autoBalloon'
 import { resequenceBalloons, nextBalloonNo } from '@/lib/balloonUtils'
 import { AlertDialog } from '@/components/ui/Dialogs'
 import { v4 as uuidv4 } from 'uuid'
@@ -214,6 +214,13 @@ export default function PDFViewer({ url, modelId }: PDFViewerProps) {
                 // Do NOT console.error: Next.js 16 dev overlay intercepts it.
                 setAlertDialog({
                     title: 'Scanned Drawing Detected',
+                    message: e.message,
+                    variant: 'warning',
+                })
+            } else if (e instanceof VectorNoTextError) {
+                // Vector PDF but text is encoded as curves/paths
+                setAlertDialog({
+                    title: 'Text Not Extractable',
                     message: e.message,
                     variant: 'warning',
                 })
